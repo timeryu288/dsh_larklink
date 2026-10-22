@@ -1,2 +1,61 @@
 # dsh_larklink
-A DeepSeek harness plugin that supports binding multiple Lark authorizations simultaneously to perform document operations independently, automatically switching to the corresponding account to operate the document based on the document I paste.
+
+**DeepSeek Harness (DSH) 插件：同时绑定多个相互独立的 Lark/飞书账号，根据粘贴的文档 URL 自动切换对应账号执行文档操作。**
+
+> 状态：🚧 设计阶段（M0）· 设计方案见 [docs/design.md](docs/design.md) · 开发主线在 `dev` 分支
+
+## 这是什么
+
+[lark-cli](https://github.com/larksuite/cli) 原生支持多 profile（每个 profile 独立的品牌、应用凭证和用户授权），但没有「这条文档 URL 该用哪个账号」的路由层。dsh_larklink 补上这一层，并以 DSH 插件形态暴露给 AI Agent：
+
+```
+用户: "把这个文档改一下 https://xxx.feishu.cn/docx/Abc123"
+      "顺便把这份 Lark 文档同步一下 https://tenant.larksuite.com/wiki/Wxyz789"
+
+Agent:  ├─ larklink_resolve(url)  → { profile: "work-feishu", ... }   # 自动选账号
+        ├─ larklink_exec(--url ..., -- docs +update ...)             # 用正确账号执行
+        └─ larklink_resolve(url2) → { profile: "intl-lark", ... }
+```
+
+## 核心特性
+
+- **多账号并存**：飞书（国内）与 Lark（国际版）、多个租户、多个个人账号同时绑定，互不干扰——底层复用 `lark-cli` 原生 profile 隔离，token 不落插件。
+- **URL 自动路由**：按域名判品牌（`feishu.cn` / `larksuite.com` / `doubao.com`），按路径判资源类型（docx / wiki / sheets / base / slides…），歧义时展示候选让用户选一次并记住（pin）。
+- **安全协议透传**：高风险写操作的 exit-10 确认门禁、`--dry-run` 预览、`ok == true` 成功判定全部沿用 lark-cli 契约，插件只做转发，不绕过任何门禁。
+- **可独立使用**：核心是 `larklink` CLI（路由 / 绑定管理 / 执行器），DSH 插件只是薄适配层。
+
+## 架构一览
+
+```
+DSH Agent ── larklink_* 工具 ── dsh-plugin（薄适配）
+                                   │
+                              larklink CLI（resolve / bindings / exec）
+                                   │                    │
+                            registry.json          lark-cli --profile <n>
+                           （路由元数据，无密钥）      （唯一执行引擎，多账号授权隔离）
+```
+
+## 计划的交付物
+
+| 包 | 说明 |
+| --- | --- |
+| `packages/core` | URL 解析器、注册表、路由决策（纯 TS，可单测） |
+| `packages/cli` | `larklink` 命令行：`bindings add/auth/list/health/remove/pin`、`resolve`、`exec` |
+| `packages/dsh-plugin` | DSH cordis 插件：`larklink_bindings` / `larklink_resolve` / `larklink_exec` 三个模型工具 |
+| `skills/larklink` | DSH 技能指南：何时 resolve、歧义与确认协议的处理 |
+
+## 路线图
+
+- [ ] **M0** 仓库初始化 + 设计方案（当前）
+- [ ] **M1** core：解析器 + 注册表 + resolve（单测覆盖）
+- [ ] **M2** CLI：绑定生命周期 + exec，真实绑定第二个账号端到端走通
+- [ ] **M3** DSH 插件三工具 + SKILL.md，双账号文档自动路由验收
+- [ ] **M4** 审计日志、写操作守卫、（可选）genui 绑定管理面板
+
+## 文档
+
+- [设计方案（含已验证事实、路由算法、安全设计、开放问题）](docs/design.md)
+
+## License
+
+见 [LICENSE](LICENSE)。
