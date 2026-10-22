@@ -142,9 +142,11 @@ Agent 交互协议：add/auth 必须走 split-flow（当轮只给 URL + 二维�
 larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 ```
 
-- `--profile` 与 `--url` 二选一：给 URL 时内部先 resolve；都不给则报错（**不做隐式默认**）。
+- `--profile` 与 `--url` 可单传或并传；都不给则报错（**不做隐式默认**）。并传时：用户显式指定的 profile 优先（Q1=A 原则，跳过 pin/sole 自动选择），但**品牌校验不豁免**——url 品牌与 profile 品牌不符直接拒绝。
+- **目标一致性守卫（Q5 决议）**：exec 从 argv 提取目标参数（`--doc` / `--url` / `--file` 等白名单 flag），与本次路由得到的 url/token 比对；**能提取到且冲突 → 拒绝执行**，报 mismatch 让 Agent 重新 resolve。识别不了的命令不比对、不阻塞（fail-open，避免白名单不全挡住正常操作）。白名单按 lark-cli 各域 flag 名在 M3 维护。
+- **不信任上次 resolve 快照**：resolve 与 exec 是两次独立调用，其间 pin/绑定状态可能被其他会话改变。exec 带 url 时内部按**当时最新状态**重新 resolve；只带 profile 时不路由直接执行。
 - spawn 用 **argv 数组**，禁止 shell 字符串拼接（防注入，也符合 lark-shared 对 exit 10 重试的要求）。
-- 结果透传：stdout JSON / stderr JSON / 退出码原样返回，并在外层信封附上 `{ profile, argv, durationMs }`。
+- 结果透传：stdout JSON / stderr JSON / 退出码原样返回，并在外层信封附上 `{ profile, confidence, argv, durationMs }`，供 Agent 核对实际使用的身份。
 - **exit 10 协议透传**：检测 `error.type == "confirmation"` → 返回 `needsConfirmation` 结构（含 action/risk/参数预览），由 Agent 向用户确认；用户同意后由 Agent 显式重试原 argv + `--yes`。绝不静默放行。
 - 成功判定以 `ok == true` / 退出码 0 为准（防旧格式 `code==0` 误判）。
 - Windows 注意：`lark-cli` 是 `.ps1` wrapper，spawn 时经 `pwsh -File` 或定位其底层可执行文件（M1 实测定稿）。
