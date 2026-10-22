@@ -91,26 +91,28 @@
 ## 5. URL 路由算法（resolve）
 
 ```
-输入: url
+输入: url 或裸 token（纯自然语言描述不支持 v1，由 Agent 追问取得链接/token）
 1. 规范化 → 解析 domain / path / token / resourceType
-   resourceType ← path 前缀: /docx/ /doc/ /wiki/ /sheets/ /base/ /slides/
-                             /mindnotes/ /whiteboard/ /drive/folder/ /minutes/
-2. brand 判定（按域名）:
-     *.feishu.cn          → feishu
-     *.larksuite.com      → lark
-     doubao.com           → brand 未知（字节系前端，背后可能是飞书文档）
-     其它/未知域           → brand 未知
-3. 候选集 = bindings 中 brand 匹配者；brand 未知时 = 全部绑定
+   resourceType ← 路径前缀（/docx/ /doc/ /wiki/ /sheets/ /base/ /slides/
+                  /mindnotes/ /whiteboard/ /drive/folder/ /minutes/）
+                  或裸 token 前缀（doxcn/shtcn/wikcn…，M1 与 lark-drive SKILL 对照定稿）
+2. brand 判定:
+     *.feishu.cn / *.larksuite.com → 对应品牌
+     doubao.com、其它域名、裸 token → 无品牌证据
+3. 候选集: brand 已知 → 该品牌全部绑定；brand 未知 → 全部绑定
 4. 消歧（按优先级）:
    a. 本次用户显式指定的操作身份优先（仍须校验品牌与授权）
-   b. 使用该文档此前由用户确认的账号偏好（pin）
-   c. tenantHints 仅用于提示候选，不代表已确认的操作身份；空间/租户默认规则待讨论
-   d. 首次身份歧义时展示候选，由用户选择，并可记住为文档级 pin
-   e. 已指定或记住的账号失效时修复其授权，或由用户明确改选；禁止仅因另一账号 ready 就切换写入
+   b. 该文档的 pin（用户此前确认的选择）
+   c. 候选集恰好只有一个绑定 → 直接选中（confidence=sole；按存在性唯一判定，
+      不看登录状态——若该绑定失效，报"修复授权"，不换绑定）
+   d. 其余歧义 → 展示候选让用户选择，选择记为 pin（选择同时隐含品牌）
+   e. 已选中/记住的绑定失效时修复其授权，或由用户明确改选；
+      禁止仅因另一绑定 ready 就切换
+   （tenantHints 仅用于候选展示辅助，不参与自动选择）
 5. wiki 链接：标记 wikiUnwrapNeeded，执行期先 `drive +inspect` 解包 obj_token
 6. 输出 ResolveResult:
    { profile, brand, resourceType, token, wikiUnwrapNeeded,
-     confidence: exact|hint|default|asked, reason }
+     confidence: explicit|pinned|sole|asked, reason }
 ```
 
 设计要点：
@@ -209,6 +211,6 @@ dsh_larklink/
 
 1. **`larklink_exec` 的开放度**：透传任意 lark-cli 命令（灵活，靠门禁兜底）还是先收敛为白名单域（docs/drive）？→ 倾向：M3 先白名单，M4 视使用情况放开。
 2. **歧义默认策略**：已决（审查 Q1=A）——本次显式指定 > 文档级 pin > 首次询问并可记住；记住的账号失效时修复授权或用户改选，不自动换账号写入。
-3. **doubao.com 链接**的默认归属（无法从域名判品牌）：跟随 pins → feishu 默认 → 询问，三级兜底是否 OK？
+3. **doubao.com 链接 / 裸 token**：已决（审查 Q3）——不做"默认 feishu"猜测；pins → 唯一绑定直选（sole）→ 询问并 pin。纯自然语言描述不进 v1，由 Agent 追问取得链接或 token。
 4. **包名**：npm 发布名用 `dsh-larklink` 还是 `@timeryu288/dsh-larklink`（scope 版不占用裸名）？
 5. **registry 位置**：`~/.larklink/` 还是放进 DSH profile 数据目录（随 profile 隔离）？→ 倾向前者：跨 profile/会话共享绑定。
