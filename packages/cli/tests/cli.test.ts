@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createRegistry, upsertBinding, upsertPin } from "@timeryu288/larklink-core";
 import { cmdResolve, classifyProbe } from "../src/commands/resolve.js";
 import { cmdExec } from "../src/commands/exec.js";
-import { cmdAdopt, cmdPin, mapStatus } from "../src/commands/bindings.js";
+import { cmdAdopt, cmdList, cmdPin, mapStatus } from "../src/commands/bindings.js";
 import type { LarkRunResult } from "../src/larkcli.js";
 import { appendAudit, auditPath } from "../src/audit.js";
 import { loadRegistry, saveRegistry } from "../src/store.js";
@@ -233,6 +233,33 @@ describe("bindings：adopt / pin / 状态映射", () => {
     expect(await cmdPin({ op: "add", token: "Tok1", profile: "ghost" }, home)).toBe(2);
     expect(await cmdPin({ op: "remove", token: "Tok1" }, home)).toBe(0);
     expect((await loadRegistry(home)).pins).toHaveLength(0);
+  });
+});
+
+describe("bindings：health 状态同步（真实 auth status 结构）", () => {
+  it("identities.user.tokenStatus=valid → ready，同步 userName/openId", async () => {
+    await seedTwoFeishu();
+    const { runner } = recorder([
+      okResult(JSON.stringify({ appId: "cli_1", brand: "feishu", identities: { user: { status: "ready", available: true, userName: "张三", openId: "ou_9", tokenStatus: "valid", refreshExpiresAt: new Date(Date.now() + 7 * 86400e3).toISOString() } } })),
+      okResult(JSON.stringify({ appId: "cli_2", brand: "feishu", identities: { user: { status: "ready", userName: "李四", tokenStatus: "valid" } } })),
+    ]);
+    expect(await cmdList({ runner, home }, { health: true })).toBe(0);
+    const reg = await loadRegistry(home);
+    expect(reg.bindings.find((b) => b.profile === "work-feishu")).toMatchObject({ status: "ready", userName: "张三", openId: "ou_9" });
+  });
+
+  it("无 user 身份（bot-only）→ incomplete；refreshExpiresAt <48h 出警告", async () => {
+    let reg = createRegistry();
+    reg = upsertBinding(reg, { profile: "bot-only", brand: "feishu", appId: "cli_b", status: "ready" });
+    reg = upsertBinding(reg, { profile: "soon", brand: "feishu", appId: "cli_s", status: "ready" });
+    await saveRegistry(reg, home);
+    const { runner } = recorder([
+      okResult(JSON.stringify({ identities: { bot: { status: "ready", available: true } } })), // bot-only → incomplete
+      okResult(JSON.stringify({ identities: { user: { userName: "王五", tokenStatus: "valid", refreshExpiresAt: new Date(Date.now() + 20 * 3600e3).toISOString() } } })),
+    ]);
+    expect(await cmdList({ runner, home }, { health: true })).toBe(0);
+    const reg2 = await loadRegistry(home);
+    expect(reg2.bindings.find((b) => b.profile === "bot-only")!.status).toBe("incomplete");
   });
 });
 

@@ -169,29 +169,68 @@ export async function cmdAuth(
   return 0;
 }
 
+interface AuthStatusPayload {
+  identities?: {
+    user?: {
+      status?: string;
+      available?: boolean;
+      userName?: string;
+      openId?: string;
+      tokenStatus?: string;
+      refreshExpiresAt?: string;
+    };
+    bot?: { status?: string; available?: boolean };
+  };
+}
+
+/**
+ * 用真实 `auth status --json --verify` 结构同步（identities.user.{userName,tokenStatus,refreshExpiresAt}）。
+ * 无 user 身份 → incomplete（绑定=app+user，bot-only 不可作用户身份路由）。
+ */
 async function syncBindingStatus(
   ctx: BindingsCtx,
   home: string,
   profile: string,
-): Promise<{ status?: BindingStatus; userName?: string; openId?: string }> {
+): Promise<{ status?: BindingStatus; userName?: string; openId?: string; warning?: string }> {
   const res = await ctx.runner(["--profile", profile, "auth", "status", "--json", "--verify"], { timeoutMs: 20_000 });
-  const payload = safeJson(res.stdout) as Record<string, unknown> | null;
-  const user = payload?.["user"] as { name?: string; open_id?: string } | undefined;
-  const tokenStatus = (payload?.["token_status"] ?? payload?.["tokenStatus"] ?? payload?.["status"]) as string | undefined;
-  const hasUser = user !== undefined && user !== null;
-  const status = mapStatus(typeof tokenStatus === "string" ? tokenStatus : "", hasUser);
+  const payload = safeJson(res.stdout) as AuthStatusPayload | null;
+  const user = payload?.identities?.user;
+  if (user === undefined) {
+    const updated = await setBindingStatus(home, profile, "incomplete");
+    void updated;
+    return { status: "incomplete", warning: `绑定 ${profile} 无 user 身份（bot-only）→ incomplete，不可路由` };
+  }
+  const status = mapStatus(user.tokenStatus ?? user.status, true);
+  let warning: string | undefined;
+  if (user.refreshExpiresAt !== undefined) {
+    const expiry = Date.parse(user.refreshExpiresAt);
+    if (!Number.isNaN(expiry)) {
+      const hoursLeft = (expiry - Date.now()) / 3_600_000;
+      if (hoursLeft < 0) warning = `绑定 ${profile} refresh token 已过期，需重新授权`;
+      else if (hoursLeft < 48) warning = `绑定 ${profile} refresh token ${hoursLeft.toFixed(1)}h 后过期，建议尽快重新授权`;
+    }
+  }
   let registry = await loadRegistry(home);
   const existing = findBinding(registry, profile);
   if (existing) {
     registry = upsertBinding(registry, {
       ...existing,
       status,
-      userName: user?.name ?? existing.userName,
-      openId: user?.open_id ?? existing.openId,
+      userName: user.userName ?? existing.userName,
+      openId: user.openId ?? existing.openId,
     });
     await saveRegistry(registry, home);
   }
-  return { status, userName: user?.name, openId: user?.open_id };
+  return { status, userName: user.userName, openId: user.openId, warning };
+}
+
+async function setBindingStatus(home: string, profile: string, status: BindingStatus): Promise<boolean> {
+  let registry = await loadRegistry(home);
+  const existing = findBinding(registry, profile);
+  if (!existing) return false;
+  registry = upsertBinding(registry, { ...existing, status });
+  await saveRegistry(registry, home);
+  return true;
 }
 
 /** list / health：同步各绑定真实状态；health 额外清理死 pin（Q10-①）。 */
@@ -203,7 +242,8 @@ export async function cmdList(ctx: BindingsCtx, opts: { fast?: boolean; health?:
     for (const b of registry.bindings) {
       try {
         const s = await syncBindingStatus(ctx, home, b.profile);
-        if (opts.health && s.status && s.status !== "ready") {
+        if (s.warning) warnings.push(s.warning);
+        if (opts.health && s.status && s.status !== "ready" && s.status !== "incomplete") {
           warnings.push(`绑定 ${b.profile} 状态 ${s.status}：请 larklink bindings auth ${b.profile} 修复`);
         }
       } catch (e) {
