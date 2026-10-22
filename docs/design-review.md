@@ -6,7 +6,7 @@
 
 1. 多个账号均能访问同一文档时，何谓“正确账号”？区分文档归属、访问权限和用户希望使用的操作身份。（Q1，待回答）
 2. 绑定的业务单位：品牌、应用、租户、用户及操作身份的关系；同一应用多用户的真实凭证隔离能力。（已决：Q2=A，见 ADR-0001）
-3. 自动路由的证据：显式选择、文档级记忆、域名提示、访问能力验证、歧义处理；未知域名与裸 token 的输入边界。（输入边界已决：Q3；能力探测待问）
+3. 自动路由的证据：显式选择、文档级记忆、域名提示、访问能力验证、歧义处理；未知域名与裸 token 的输入边界。（已决：Q3 输入契约 + Q4 能力探测）
 4. 路由与执行的一致性：账号重登、配置改名、权限变化、URL 与实际 argv 目标不一致、执行时覆盖 profile/as 参数。
 5. 操作范围和授权：读写权限分别验证、应用身份回退、确认与具体请求绑定，不能仅依赖 CLI 高风险门禁。
 6. 写入可靠性：并发修改、预览与提交之间变化、超时后结果未知、部分成功、重试与幂等、批量跨账号操作。
@@ -29,6 +29,10 @@
 ## 证据状态更正
 
 已通过官方 v1.0.76 源码核实：profile add 禁止重复 App ID；token 存储键为 App ID + 用户 open_id，不包含 profile 名。已更正 design.md §2。依据：https://github.com/larksuite/cli/blob/v1.0.76/cmd/profile/add.go 与 https://github.com/larksuite/cli/blob/v1.0.76/internal/auth/token_store.go 。进一步源码证据：cmd/auth/login.go 的 syncLoginUserToProfile 将 profile 用户列表写成单元素，新用户登录会删除旧用户 token；internal/core/config.go 使用 Users[0] 作为有效用户。因此通过现有正式 profile/login 路径无法为同一应用同时维持多个登录用户。未进行真实双用户登录实验；不通过手工复制配置或全局切换用户来假装独立。来源：https://github.com/larksuite/cli/blob/v1.0.76/cmd/auth/login.go 与 https://github.com/larksuite/cli/blob/v1.0.76/internal/core/config.go 。
+
+## Q4：歧义询问时的能力探测
+
+决定：用户选择 A（2026-10-22）。询问前对候选做只读探测并标注（可访问/只读/无权限/授权失效，超时不阻塞）；探测结果不参与自动选择；无权限候选不隐藏；--no-probe 可跳过。已入 design.md §5。
 
 ## Q3：resolve 输入契约与无品牌证据输入
 
