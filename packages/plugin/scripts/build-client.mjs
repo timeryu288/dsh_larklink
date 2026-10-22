@@ -24,7 +24,7 @@ const outputFile = result.outputFiles[0];
 if (outputFile === undefined) throw new Error("esbuild 未产出 client bundle");
 const code = outputFile.text;
 const wrapped = `window.__ModuleLoader__.load({
-	id: "@timeryu288/dsh-larklink",
+	id: "@timeryu/dsh-larklink",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;

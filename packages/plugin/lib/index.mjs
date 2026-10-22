@@ -1442,10 +1442,10 @@ docs · drive · sheets · markdown · slides · base · whiteboard · wiki · m
 `;
 // src/index.ts
 /**
-* @timeryu288/dsh-larklink —— DSH 插件入口（cordis 契约：name / inject / Config / apply）。
+* @timeryu/dsh-larklink —— DSH 插件入口（cordis 契约：name / inject / Config / apply）。
 * 工具注册 + 内嵌 SKILL 注册；所有命令走 CLI 层同一执行引擎（Q5-Q9 守卫全量生效）。
 */
-const name = "@timeryu288/dsh-larklink";
+const name = "@timeryu/dsh-larklink";
 const inject = ["tools"];
 /** 运行时配置（cordis 校验并填充默认值）。 */
 const Config = Schema.object({

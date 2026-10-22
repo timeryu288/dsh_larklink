@@ -36,7 +36,7 @@
 
 ## Q9：插件边界（白名单/共存纪律/包名）
 
-决定：① A——v1 白名单限文档域（docs/drive/sheets/markdown/slides/base/whiteboard/wiki/mindnotes），其他域走原生 lark-cli，M4 视情况放开；② 同意——SKILL 硬纪律：≥2 可用绑定时文档域操作必须经 larklink，禁止直接调 lark-cli（纪律+审计对账）；③ 包名 `@timeryu288/dsh-larklink`。（2026-10-22）已入 design.md §7/§8/§12。
+决定：① A——v1 白名单限文档域（docs/drive/sheets/markdown/slides/base/whiteboard/wiki/mindnotes），其他域走原生 lark-cli，M4 视情况放开；② 同意——SKILL 硬纪律：≥2 可用绑定时文档域操作必须经 larklink，禁止直接调 lark-cli（纪律+审计对账）；③ 包名 `@timeryu288/dsh-larklink`（发布时因 npm scope 归属改为 `@timeryu/dsh-larklink`，见 design.md §12-4）。（2026-10-22）已入 design.md §7/§8/§12。
 
 ## Q8：绑定生命周期边界
 

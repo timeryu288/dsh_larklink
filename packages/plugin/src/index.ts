@@ -1,5 +1,5 @@
 /**
- * @timeryu288/dsh-larklink —— DSH 插件入口（cordis 契约：name / inject / Config / apply）。
+ * @timeryu/dsh-larklink —— DSH 插件入口（cordis 契约：name / inject / Config / apply）。
  * 工具注册 + 内嵌 SKILL 注册；所有命令走 CLI 层同一执行引擎（Q5-Q9 守卫全量生效）。
  */
 import Schema from "@deepseek-ai/schemastery";
@@ -12,7 +12,7 @@ import {
   LARKLINK_SKILL_NAME,
 } from "./skill-content.js";
 
-export const name = "@timeryu288/dsh-larklink";
+export const name = "@timeryu/dsh-larklink";
 export const inject = ["tools"];
 
 /** 运行时配置（cordis 校验并填充默认值）。 */

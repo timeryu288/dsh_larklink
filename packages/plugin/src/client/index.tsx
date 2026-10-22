@@ -8,7 +8,7 @@ import React, { useEffect, useRef, useState } from "react";
 
 export const inject = ["slots"];
 
-const TAB_ID = "@timeryu288/dsh-larklink/bindings";
+const TAB_ID = "@timeryu/dsh-larklink/bindings";
 const TAB_KIND = "larklink-bindings";
 const TAB_TITLE = "Lark 绑定";
 const BODY_SLOT = "sidebar.right.pane.tab";

@@ -161,7 +161,7 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 - 成功判定以 `ok == true` / 退出码 0 为准（防旧格式 `code==0` 误判）。
 - Windows 注意：`lark-cli` 是 `.ps1` wrapper，spawn 时经 `pwsh -File` 或定位其底层可执行文件（M1 实测定稿）。
 
-## 8. DSH 插件（packages/plugin，npm 名 `@timeryu288/dsh-larklink`）
+## 8. DSH 插件（packages/plugin，npm 名 `@timeryu/dsh-larklink`）
 
 参照 `browser-skill-dsh-plugin` 的包结构：
 
@@ -171,7 +171,7 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 ```yaml
 - insert:
     - id: larklink
-      name: "@timeryu288/dsh-larklink"   # 必须与发布包名一致（Q9-③ 决议；@ 开头需引号）
+      name: "@timeryu/dsh-larklink"   # 必须与发布包名一致（Q9-③ 决议；@ 开头需引号）
 ```
 
 - 注册三个模型工具（`defineTool`）：
@@ -228,5 +228,5 @@ dsh_larklink/
 1. **`larklink_exec` 的开放度**：已决（审查 Q9-①=A）——v1 白名单限文档域（docs/drive/sheets/markdown/slides/base/whiteboard/wiki/mindnotes），其他域走原生 lark-cli；M4 视使用情况放开。
 2. **歧义默认策略**：已决（审查 Q1=A）——本次显式指定 > 文档级 pin > 首次询问并可记住；记住的账号失效时修复授权或用户改选，不自动换账号写入。
 3. **doubao.com 链接 / 裸 token**：已决（审查 Q3）——不做"默认 feishu"猜测；pins → 唯一绑定直选（sole）→ 询问并 pin。纯自然语言描述不进 v1，由 Agent 追问取得链接或 token。
-4. **包名**：已决（审查 Q9-③）——`@timeryu288/dsh-larklink`（scope 版，不占裸名、可私有发布）。
+4. **包名**：已决（审查 Q9-③）——scope 版，不占裸名、可私有发布。原定 `@timeryu288/dsh-larklink`，发布时因 npm scope 归属（npm 用户名为 timeryu、org timeryu288 不存在）改为 **`@timeryu/dsh-larklink`**（2026-10-22）。
 5. **registry 位置**：已决（审查 Q10-②）——机器级 `~/.larklink/`，跨 DSH profile/会话共享（lark-cli 凭证本就是机器级，DSH 侧隔离是半吊子隔离）。并发写用原子写 + 文件锁。

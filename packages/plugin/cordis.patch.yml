@@ -1,4 +1,4 @@
 - insert:
     - id: larklink
       # 必须与发布包名一致（Q9-③）；@ 开头需引号（YAML 保留字符）
-      name: "@timeryu288/dsh-larklink"
+      name: "@timeryu/dsh-larklink"

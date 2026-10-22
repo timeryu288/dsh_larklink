@@ -12,7 +12,7 @@ interface LarkRunnerLike {
     timedOut: boolean;
   }>;
 }
-declare const name = "@timeryu288/dsh-larklink";
+declare const name = "@timeryu/dsh-larklink";
 declare const inject: string[];
 /** 运行时配置（cordis 校验并填充默认值）。 */
 declare const Config: Schema<Schemastery.ObjectS<NoInfer<{

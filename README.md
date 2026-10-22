@@ -41,7 +41,7 @@ DSH Agent ── larklink_* 工具 ── dsh-plugin（薄适配）
 | --- | --- | --- |
 | `packages/core` | URL/裸 token 解析器、注册表、路由决策（纯 TS，可单测） | ✅ |
 | `packages/cli` | `larklink` 命令行：`bindings adopt/add/auth/list/health/remove/pin`、`resolve`（含探测）、`exec`（守卫链） | ✅ |
-| `packages/plugin` | DSH cordis 插件 `@timeryu288/dsh-larklink`：`larklink_bindings` / `larklink_resolve` / `larklink_exec` 三工具 + 内嵌 SKILL | ✅（未发布） |
+| `packages/plugin` | DSH cordis 插件 `@timeryu/dsh-larklink`：`larklink_bindings` / `larklink_resolve` / `larklink_exec` 三工具 + 内嵌 SKILL + genui 面板 | ✅ 已发布 npm |
 
 ## 路线图
 

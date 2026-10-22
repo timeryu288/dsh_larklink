@@ -1,4 +1,4 @@
-# @timeryu288/dsh-larklink
+# @timeryu/dsh-larklink
 
 DeepSeek Harness 插件：多账号 lark-cli 路由 + 守卫式文档执行。
 
@@ -23,7 +23,7 @@ DeepSeek Harness 插件：多账号 lark-cli 路由 + 守卫式文档执行。
 # cordis.patch.yml
 - insert:
     - id: larklink
-      name: "@timeryu288/dsh-larklink"
+      name: "@timeryu/dsh-larklink"
 ```
 
 前置：lark-cli 已安装并可执行（或设 `LARKLINK_LARK_CLI` 指向原生二进制）。

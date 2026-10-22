@@ -7,7 +7,7 @@
     "test": "vitest run",
     "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/cli --noEmit && tsc -p packages/plugin --noEmit",
     "larklink": "tsx packages/cli/bin/larklink.ts",
-    "build:plugin": "pnpm --filter @timeryu288/dsh-larklink build"
+    "build:plugin": "pnpm --filter @timeryu/dsh-larklink build"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

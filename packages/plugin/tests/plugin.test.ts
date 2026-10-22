@@ -146,7 +146,7 @@ async function seedSolo() {
 
 describe("插件：注册与契约", () => {
   it("导出 cordis 契约字段", () => {
-    expect(name).toBe("@timeryu288/dsh-larklink");
+    expect(name).toBe("@timeryu/dsh-larklink");
     expect(inject).toEqual(["tools"]);
   });
 
