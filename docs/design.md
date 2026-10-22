@@ -146,7 +146,11 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 - **目标一致性守卫（Q5 决议）**：exec 从 argv 提取目标参数（`--doc` / `--url` / `--file` 等白名单 flag），与本次路由得到的 url/token 比对；**能提取到且冲突 → 拒绝执行**，报 mismatch 让 Agent 重新 resolve。识别不了的命令不比对、不阻塞（fail-open，避免白名单不全挡住正常操作）。白名单按 lark-cli 各域 flag 名在 M3 维护。
 - **不信任上次 resolve 快照**：resolve 与 exec 是两次独立调用，其间 pin/绑定状态可能被其他会话改变。exec 带 url 时内部按**当时最新状态**重新 resolve；只带 profile 时不路由直接执行。
 - spawn 用 **argv 数组**，禁止 shell 字符串拼接（防注入，也符合 lark-shared 对 exit 10 重试的要求）。
-- 结果透传：stdout JSON / stderr JSON / 退出码原样返回，并在外层信封附上 `{ profile, confidence, argv, durationMs }`，供 Agent 核对实际使用的身份。
+- 结果透传：stdout JSON / stderr JSON / 退出码原样返回，并在外层信封附上 `{ profile, confidence, outcome, argv, durationMs }`，供 Agent 核对实际使用的身份与结果状态。
+- **写入可靠性（Q7 决议）**：
+  - `outcome: success | error | timeout-unknown`——超时后结果未知，**禁止自动重试同 argv**；SKILL 强制：先只读核查（fetch 文档实际状态）再决定是否重试（文档域命令大多无幂等键）。
+  - 批量跨文档/跨绑定：逐个 resolve+exec（Q3 已定），失败不中断，最后汇总每文档成功/失败清单给用户处置；exec 无跨请求事务，此为 Agent 编排纪律（SKILL）。
+  - `overwrite` / `block_replace` / 整段替换类写操作前**必须 fresh fetch 最新内容**做增量合并（预览-提交间隙的并发修改防护，lark-cli 文档域不暴露版本号，纪律兜底）；`str_replace` 类目标文本不存在会失败而非误覆盖，相对安全。
 - **执行身份（Q6-① 决议 B）**：exec 默认 `--as user`；允许应用身份（bot）执行，但必须通过工具级参数 `as: "user" | "bot"` 显式声明。argv 内出现的 `--as` 一律剥离并拒绝（防夹带，显式声明只有工具参数一个入口）。应用身份操作仍走同一绑定的路由（该绑定的应用），审计日志按身份分别标记；bot 无法访问用户个人资源由平台权限自然拦截。
 - **exit 10 协议透传**：检测 `error.type == "confirmation"` → 返回 `needsConfirmation` 结构（含 action/risk/参数预览）**及 `confirmationId`（argv+profile 指纹哈希）**，由 Agent 向用户确认；用户同意后由 Agent 显式重试原 argv + `--yes` 并携带该 confirmationId，**指纹不一致即拒绝**——用户同意的是他看到的那条命令，确认不可挪用到其他请求。绝不静默放行。
 - 成功判定以 `ok == true` / 退出码 0 为准（防旧格式 `code==0` 误判）。

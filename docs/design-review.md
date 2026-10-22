@@ -8,8 +8,8 @@
 2. 绑定的业务单位：品牌、应用、租户、用户及操作身份的关系；同一应用多用户的真实凭证隔离能力。（已决：Q2=A，见 ADR-0001）
 3. 自动路由的证据：显式选择、文档级记忆、域名提示、访问能力验证、歧义处理；未知域名与裸 token 的输入边界。（已决：Q3 输入契约 + Q4 能力探测）
 4. 路由与执行的一致性：账号重登、配置改名、权限变化、URL 与实际 argv 目标不一致、执行时覆盖 profile/as 参数。（已决：Q5；配置改名归生命周期题）
-5. 操作范围和授权：读写权限分别验证、应用身份回退、确认与具体请求绑定，不能仅依赖 CLI 高风险门禁。
-6. 写入可靠性：并发修改、预览与提交之间变化、超时后结果未知、部分成功、重试与幂等、批量跨账号操作。
+5. 操作范围和授权：读写权限分别验证、应用身份回退、确认与具体请求绑定，不能仅依赖 CLI 高风险门禁。（已决：Q6）
+6. 写入可靠性：并发修改、预览与提交之间变化、超时后结果未知、部分成功、重试与幂等、批量跨账号操作。（已决：Q7）
 7. 绑定生命周期：创建应用与用户授权分离；授权流程恢复；插件解绑与删除用户已有 CLI profile 分离。
 8. 插件集成与范围：工具是否必须经过路由、已有 lark-* skills 的直接 CLI 路径、首版可用 UI 与文档修改验收。
 9. 数据生命周期：文档级记忆失效、跨 DSH 配置共享、审计脱敏、缓存并发与持久化。
@@ -29,6 +29,10 @@
 ## 证据状态更正
 
 已通过官方 v1.0.76 源码核实：profile add 禁止重复 App ID；token 存储键为 App ID + 用户 open_id，不包含 profile 名。已更正 design.md §2。依据：https://github.com/larksuite/cli/blob/v1.0.76/cmd/profile/add.go 与 https://github.com/larksuite/cli/blob/v1.0.76/internal/auth/token_store.go 。进一步源码证据：cmd/auth/login.go 的 syncLoginUserToProfile 将 profile 用户列表写成单元素，新用户登录会删除旧用户 token；internal/core/config.go 使用 Users[0] 作为有效用户。因此通过现有正式 profile/login 路径无法为同一应用同时维持多个登录用户。未进行真实双用户登录实验；不通过手工复制配置或全局切换用户来假装独立。来源：https://github.com/larksuite/cli/blob/v1.0.76/cmd/auth/login.go 与 https://github.com/larksuite/cli/blob/v1.0.76/internal/core/config.go 。
+
+## Q7：写入可靠性三件套
+
+决定：三点全收（2026-10-22）。① outcome=timeout-unknown 禁止自动重试，先只读核查；② 批量逐个执行失败不中断最后汇总（Agent 纪律）；③ overwrite/block_replace/整段替换前强制 fresh fetch 增量合并（str_replace 类相对安全）。已入 design.md §7。
 
 ## Q6：执行身份硬约束与确认绑定
 
