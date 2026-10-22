@@ -86,6 +86,8 @@
 
 **红线：registry 只存路由元数据，不存 token / appSecret。** 凭证完全交给 lark-cli 的 profile 机制管理。
 
+**不变量（ADR-0001）**：一个绑定 = 一个独立应用（App ID 全局唯一）+ 该应用下唯一授权用户；绑定与 lark-cli profile 一一对应。添加绑定即添加 profile，需要新建应用或使用未被占用的 App ID。
+
 ## 5. URL 路由算法（resolve）
 
 ```
@@ -206,7 +208,7 @@ dsh_larklink/
 ## 12. 开放问题（需要拍板）
 
 1. **`larklink_exec` 的开放度**：透传任意 lark-cli 命令（灵活，靠门禁兜底）还是先收敛为白名单域（docs/drive）？→ 倾向：M3 先白名单，M4 视使用情况放开。
-2. **歧义默认策略**：同品牌多账号无 hint 时，"问一次并 pin"是否可接受？还是每次都问？→ 倾向：问一次并 pin，pin 可 `bindings pin --remove` 清除。
+2. **歧义默认策略**：已决（审查 Q1=A）——本次显式指定 > 文档级 pin > 首次询问并可记住；记住的账号失效时修复授权或用户改选，不自动换账号写入。
 3. **doubao.com 链接**的默认归属（无法从域名判品牌）：跟随 pins → feishu 默认 → 询问，三级兜底是否 OK？
 4. **包名**：npm 发布名用 `dsh-larklink` 还是 `@timeryu288/dsh-larklink`（scope 版不占用裸名）？
 5. **registry 位置**：`~/.larklink/` 还是放进 DSH profile 数据目录（随 profile 隔离）？→ 倾向前者：跨 profile/会话共享绑定。
