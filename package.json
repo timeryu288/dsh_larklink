@@ -5,9 +5,13 @@
   "packageManager": "pnpm@10.24.0",
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc -p packages/core --noEmit"
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/cli --noEmit",
+    "larklink": "tsx packages/cli/bin/larklink.ts",
+    "larklink:install": "pnpm --filter @timeryu288/larklink-cli exec tsx bin/larklink.ts --"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.6"
   }
