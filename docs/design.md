@@ -22,7 +22,7 @@
 
 | 事实 | 来源 |
 | --- | --- |
-| lark-cli 1.0.76 原生多 profile：`config init --name <名> --brand feishu\|lark`、`profile add/list/remove/rename/use`、全局 `--profile` 参数，token 按 profile 隔离存储 | `lark-cli config init --help`、`lark-cli profile --help`、`profile list` 实测 |
+| lark-cli 1.0.76 支持命名 profile 与 `--profile`；profile add 要求每个 profile 的 App ID 唯一。用户 token 按 App ID + 用户 open_id 存储，不按 profile 名完全隔离；同一应用多用户的绑定与执行选择方式仍需核查 | CLI help；[profile/add.go](https://github.com/larksuite/cli/blob/v1.0.76/cmd/profile/add.go)；[auth/token_store.go](https://github.com/larksuite/cli/blob/v1.0.76/internal/auth/token_store.go) |
 | 当前机器仅一个 profile（brand=feishu），说明多 profile 能力尚未被利用 | `lark-cli profile list` |
 | DSH 第三方插件 = npm 包：ESM 入口 + `cordis.patch.yml`（`insert` 到插件树）+ `defineTool`（`@deepseek-ai/dsh-tools`）注册模型工具，可声明可选的 web 客户端 UI | 参考实装：`@wxg-prc-cpg/browser-skill-dsh-plugin@0.3.0` |
 | 文档 URL 按路径模式识别：`/docx/` `/doc/` `/wiki/` `/sheets/` `/base/` `/slides/` `/drive/folder/` 等；域名不参与类型判断（feishu.cn / larksuite.com / doubao.com 同构）；wiki token 不能直接当 file token，需 `drive +inspect` 解包 | lark-drive / lark-doc / lark-sheets SKILL.md |
@@ -100,12 +100,11 @@
      其它/未知域           → brand 未知
 3. 候选集 = bindings 中 brand 匹配者；brand 未知时 = 全部绑定
 4. 消歧（按优先级）:
-   a. pins 精确匹配 urlPattern
-   b. tenantHints 匹配 domain
-   c. brand 内唯一绑定 → 直接选中
-   d. brand 内唯一 status=ready → 选中（结果标注 low confidence）
-   e. 仍歧义 → 返回候选列表，由 Agent 展示给用户选择；
-      用户选择后写入 pins，下次同 URL 自动命中
+   a. 本次用户显式指定的操作身份优先（仍须校验品牌与授权）
+   b. 使用该文档此前由用户确认的账号偏好（pin）
+   c. tenantHints 仅用于提示候选，不代表已确认的操作身份；空间/租户默认规则待讨论
+   d. 首次身份歧义时展示候选，由用户选择，并可记住为文档级 pin
+   e. 已指定或记住的账号失效时修复其授权，或由用户明确改选；禁止仅因另一账号 ready 就切换写入
 5. wiki 链接：标记 wikiUnwrapNeeded，执行期先 `drive +inspect` 解包 obj_token
 6. 输出 ResolveResult:
    { profile, brand, resourceType, token, wikiUnwrapNeeded,
