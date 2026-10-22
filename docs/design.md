@@ -1,6 +1,6 @@
 # dsh_larklink 设计方案
 
-> 版本：v0.1（草案） · 日期：2026-10-22 · 状态：讨论中
+> 版本：v0.2 · 日期：2026-10-22 · 状态：已完成第一轮设计审查（Q1-Q10 全部决议，见 docs/design-review.md 与 docs/adr/）
 > 目标仓库：https://github.com/timeryu288/dsh_larklink.git（开发主线：`dev` 分支）
 
 ## 1. 目标与非目标
@@ -121,6 +121,7 @@
 - **一次 resolve 只产出一个 profile**——杜绝单请求跨账号；批量场景（如"把这三个文档各改一下"）逐文档 resolve。
 - resolve 阶段**不做任何写操作**；`drive +inspect` 属读操作，用于 wiki 解包时可自动执行。
 - **能力探测（Q4 决议）**：歧义询问前对每个候选执行一次只读探测（按资源类型选命令，短超时 ~8s），标注 `可访问 / 只读(缺编辑scope) / 无权限 / 授权失效`；探测超时不阻塞询问。探测结果**永不参与自动选择**（能力 ≠ 意图），无权限候选不隐藏；`--no-probe` 可跳过（延迟敏感/介意多租户留痕）。注意：每次探测是该身份下的一次真实 API 调用，会留在目标租户审计日志中。
+- **pin 永久（Q10-① 决议 A）**：不设 TTL——命中 pin 的绑定失效时按 Q1 规则修复授权/用户改选，改选即更新 pin；health 时顺带清理指向已删绑定的死 pin。
 - reason 字段记录决策依据（命中 pin / hint / 默认 / 用户选择），随工具结果返回给模型与用户，可审计。
 
 ## 6. 绑定生命周期（bindings）
@@ -186,7 +187,7 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 1. **凭证零落盘**：appSecret 仅 stdin 传入 lark-cli；registry / 日志 / 工具结果中不得出现 token、secret。
 2. **门禁透传**：exit 10 → needsConfirmation（含 confirmationId 指纹）→ 用户显式同意 → `--yes` 重试原 argv 且指纹一致；拒绝即终止，确认不可挪用。
 3. **防串号**：写操作前强制 resolve 校验「当前 profile 的 brand/租户与 URL 匹配」；不匹配即拒绝执行并要求人工确认。
-4. **审计日志**：`~/.larklink/audit.jsonl`（可关闭），记录每次 resolve 与 exec 的决策依据与命令摘要（不含敏感参数值）。
+4. **审计日志（Q10-③ 决议：默认脱敏）**：`~/.larklink/audit.jsonl`（可关闭），默认只记命令名 + 目标 token + 风险级 + 结果摘要；载荷参数（`--content` / `--data` 等）**不记值**，只记长度或哈希——防文档正文泄入日志；`--audit-verbose` 显式开启才记全量，且日志文件权限收紧。
 5. **最小授权**：绑定引导按业务域（`--domain docs,drive`）而非全量 scope。
 
 ## 10. 仓库结构与分支策略
@@ -224,4 +225,4 @@ dsh_larklink/
 2. **歧义默认策略**：已决（审查 Q1=A）——本次显式指定 > 文档级 pin > 首次询问并可记住；记住的账号失效时修复授权或用户改选，不自动换账号写入。
 3. **doubao.com 链接 / 裸 token**：已决（审查 Q3）——不做"默认 feishu"猜测；pins → 唯一绑定直选（sole）→ 询问并 pin。纯自然语言描述不进 v1，由 Agent 追问取得链接或 token。
 4. **包名**：已决（审查 Q9-③）——`@timeryu288/dsh-larklink`（scope 版，不占裸名、可私有发布）。
-5. **registry 位置**：`~/.larklink/` 还是放进 DSH profile 数据目录（随 profile 隔离）？→ 倾向前者：跨 profile/会话共享绑定。
+5. **registry 位置**：已决（审查 Q10-②）——机器级 `~/.larklink/`，跨 DSH profile/会话共享（lark-cli 凭证本就是机器级，DSH 侧隔离是半吊子隔离）。并发写用原子写 + 文件锁。
