@@ -16,6 +16,10 @@ import { safeJson } from "../larkcli.js";
 import { loadRegistry, larklinkHome, saveRegistry } from "../store.js";
 import { appendAudit } from "../audit.js";
 
+/** 输出缝：默认打印 JSON（bin 行为）；插件进程内调用时捕获信封。多余参数（null, 2）被忽略。 */
+export type Emit = (payload: unknown, _indent?: unknown, _extra?: unknown) => void;
+export const stdEmit: Emit = (payload) => console.log(JSON.stringify(payload, null, 2));
+
 export interface BindingsCtx {
   runner: LarkRunner;
   home?: string;
@@ -62,13 +66,13 @@ function userNameOf(user: ProfileListEntry["user"]): string | undefined {
 }
 
 /** adopt：导入既有 lark-cli profile（不动原 profile，Q8-①）。 */
-export async function cmdAdopt(ctx: BindingsCtx, opts: { profiles?: string[] }): Promise<number> {
+export async function cmdAdopt(ctx: BindingsCtx, opts: { profiles?: string[] }, emit: Emit = stdEmit): Promise<number> {
   const home = ctx.home ?? larklinkHome();
   const res = await ctx.runner(["profile", "list"], { timeoutMs: 20_000 });
   const payload = safeJson(res.stdout);
   const entries = Array.isArray(payload) ? (payload as ProfileListEntry[]) : [];
   if (entries.length === 0) {
-    console.log(JSON.stringify({ ok: false, code: "lark-cli-error", message: `profile list 无结果（exit ${res.exitCode}）：${res.stderr.slice(0, 300)}` }));
+    emit({ ok: false, code: "lark-cli-error", message: `profile list 无结果（exit ${res.exitCode}）：${res.stderr.slice(0, 300)}` });
     return 1;
   }
   const wanted = opts.profiles ? new Set(opts.profiles) : null;
@@ -85,7 +89,7 @@ export async function cmdAdopt(ctx: BindingsCtx, opts: { profiles?: string[] }):
   }
   await saveRegistry(registry, home);
   await appendAudit({ kind: "bindings", message: `adopt: ${adopted.join(", ") || "(none)"}`, profile: adopted.join(",") }, home);
-  console.log(JSON.stringify({ ok: true, adopted, skipped, hint: skipped.length ? "跳过项为无 brand/用户的 profile" : undefined }, null, 2));
+  emit({ ok: true, adopted, skipped, hint: skipped.length ? "跳过项为无 brand/用户的 profile" : undefined }, null, 2);
   return 0;
 }
 
@@ -93,6 +97,7 @@ export async function cmdAdopt(ctx: BindingsCtx, opts: { profiles?: string[] }):
 export async function cmdAdd(
   ctx: BindingsCtx,
   opts: { name: string; brand: "feishu" | "lark"; appId: string; appSecret: string },
+  emit: Emit = stdEmit,
 ): Promise<number> {
   const home = ctx.home ?? larklinkHome();
   const res = await ctx.runner(
@@ -100,7 +105,7 @@ export async function cmdAdd(
     { timeoutMs: 30_000, stdin: opts.appSecret + "\n" },
   );
   if (res.exitCode !== 0) {
-    console.log(JSON.stringify({ ok: false, code: "lark-cli-error", exitCode: res.exitCode, error: safeJson(res.stderr) ?? res.stderr.slice(0, 400) }));
+    emit({ ok: false, code: "lark-cli-error", exitCode: res.exitCode, error: safeJson(res.stderr) ?? res.stderr.slice(0, 400) });
     return 1;
   }
   let registry = await loadRegistry(home);
@@ -112,7 +117,7 @@ export async function cmdAdd(
     addedAt: new Date().toISOString(),
   });
   await saveRegistry(registry, home);
-  console.log(JSON.stringify({ ok: true, profile: opts.name, next: `larklink bindings auth ${opts.name}` }, null, 2));
+  emit({ ok: true, profile: opts.name, next: `larklink bindings auth ${opts.name}` }, null, 2);
   return 0;
 }
 
@@ -124,6 +129,7 @@ export async function cmdAdd(
 export async function cmdAuth(
   ctx: BindingsCtx,
   opts: { profile: string; domain?: string; deviceCode?: string },
+  emit: Emit = stdEmit,
 ): Promise<number> {
   const home = ctx.home ?? larklinkHome();
   if (opts.deviceCode !== undefined) {
@@ -132,11 +138,11 @@ export async function cmdAuth(
       { timeoutMs: 30_000 },
     );
     if (res.exitCode !== 0) {
-      console.log(JSON.stringify({ ok: false, code: "lark-cli-error", exitCode: res.exitCode, error: safeJson(res.stderr) ?? res.stderr.slice(0, 400) }));
+      emit({ ok: false, code: "lark-cli-error", exitCode: res.exitCode, error: safeJson(res.stderr) ?? res.stderr.slice(0, 400) });
       return 1;
     }
     const health = await syncBindingStatus(ctx, home, opts.profile);
-    console.log(JSON.stringify({ ok: true, profile: opts.profile, ...health }, null, 2));
+    emit({ ok: true, profile: opts.profile, ...health }, null, 2);
     return 0;
   }
   const domain = opts.domain ?? "docs";
@@ -147,12 +153,12 @@ export async function cmdAuth(
   const payload = safeJson(res.stdout) as Record<string, unknown> | null;
   const errPayload = safeJson(res.stderr);
   if (res.exitCode !== 0 || payload === null) {
-    console.log(JSON.stringify({ ok: false, code: "lark-cli-error", exitCode: res.exitCode, error: errPayload ?? res.stderr.slice(0, 400) }));
+    emit({ ok: false, code: "lark-cli-error", exitCode: res.exitCode, error: errPayload ?? res.stderr.slice(0, 400) });
     return 1;
   }
   const url = (payload["verification_url"] ?? payload["url"]) as string | undefined;
   if (!url) {
-    console.log(JSON.stringify({ ok: false, code: "no-verification-url", message: "lark-cli 未返回 verification_url", payload }));
+    emit({ ok: false, code: "no-verification-url", message: "lark-cli 未返回 verification_url", payload });
     return 1;
   }
   // 二维码（尽力而为，失败不阻塞）
@@ -165,7 +171,7 @@ export async function cmdAuth(
     const qr = await ctx.runner(["auth", "qrcode", url, "--output", png], { timeoutMs: 15_000 });
     if (qr.exitCode === 0) qrcode = png;
   } catch { /* 忽略 */ }
-  console.log(JSON.stringify({ ok: true, profile: opts.profile, verificationUrl: url, qrcode, next: `用户完成授权后执行：larklink bindings auth ${opts.profile} --device-code <code>` }, null, 2));
+  emit({ ok: true, profile: opts.profile, verificationUrl: url, qrcode, next: `用户完成授权后执行：larklink bindings auth ${opts.profile} --device-code <code>` }, null, 2);
   return 0;
 }
 
@@ -234,7 +240,7 @@ async function setBindingStatus(home: string, profile: string, status: BindingSt
 }
 
 /** list / health：同步各绑定真实状态；health 额外清理死 pin（Q10-①）。 */
-export async function cmdList(ctx: BindingsCtx, opts: { fast?: boolean; health?: boolean }): Promise<number> {
+export async function cmdList(ctx: BindingsCtx, opts: { fast?: boolean; health?: boolean }, emit: Emit = stdEmit): Promise<number> {
   const home = ctx.home ?? larklinkHome();
   let registry = await loadRegistry(home);
   const warnings: string[] = [];
@@ -261,12 +267,12 @@ export async function cmdList(ctx: BindingsCtx, opts: { fast?: boolean; health?:
       warnings.push(`清理死 pin ${dead.length} 条`);
     }
   }
-  console.log(JSON.stringify({
+  emit({
     ok: true,
     bindings: registry.bindings.map((b) => ({ profile: b.profile, brand: b.brand, appId: b.appId, userName: b.userName, status: b.status, adopted: b.adopted ?? false })),
     pins: registry.pins,
     warnings,
-  }, null, 2));
+  }, null, 2);
   return 0;
 }
 
@@ -274,18 +280,19 @@ export async function cmdList(ctx: BindingsCtx, opts: { fast?: boolean; health?:
 export async function cmdRemove(
   ctx: BindingsCtx,
   opts: { profile: string; purge?: boolean; keepProfile?: boolean; yes?: boolean },
+  emit: Emit = stdEmit,
 ): Promise<number> {
   const home = ctx.home ?? larklinkHome();
   const registry = await loadRegistry(home);
   const binding = findBinding(registry, opts.profile);
   if (!binding) {
-    console.log(JSON.stringify({ ok: false, code: "binding-not-found", message: `绑定 ${opts.profile} 不存在` }));
+    emit({ ok: false, code: "binding-not-found", message: `绑定 ${opts.profile} 不存在` });
     return 2;
   }
   const willDeleteProfile = opts.purge === true || (opts.keepProfile !== true && binding.adopted !== true);
   const affectedPins = registry.pins.filter((p) => p.profile === opts.profile);
   if (!opts.yes) {
-    console.log(JSON.stringify({
+    emit({
       ok: false,
       code: "confirmation-required",
       message: "破坏性操作需 --yes 确认；请核对以下影响后重试",
@@ -295,20 +302,20 @@ export async function cmdRemove(
         adopted: binding.adopted ?? false,
         affectedPins: affectedPins.map((p) => p.token),
       },
-    }, null, 2));
+    }, null, 2);
     return 2;
   }
   if (willDeleteProfile) {
     const res = await ctx.runner(["profile", "remove", "--name", opts.profile, "--yes"], { timeoutMs: 20_000 });
     if (res.exitCode !== 0) {
-      console.log(JSON.stringify({ ok: false, code: "lark-cli-error", message: `profile remove 失败（未删除注册表）`, exitCode: res.exitCode, error: safeJson(res.stderr) ?? res.stderr.slice(0, 300) }));
+      emit({ ok: false, code: "lark-cli-error", message: `profile remove 失败（未删除注册表）`, exitCode: res.exitCode, error: safeJson(res.stderr) ?? res.stderr.slice(0, 300) });
       return 1;
     }
   }
   let updated = removeBinding(registry, opts.profile, { dropPins: true });
   await saveRegistry(updated, home);
   await appendAudit({ kind: "bindings", profile: opts.profile, message: `remove（deletedProfile=${willDeleteProfile}，pins=${affectedPins.length}）` }, home);
-  console.log(JSON.stringify({ ok: true, removed: opts.profile, deletedLarkCliProfile: willDeleteProfile, removedPins: affectedPins.length }, null, 2));
+  emit({ ok: true, removed: opts.profile, deletedLarkCliProfile: willDeleteProfile, removedPins: affectedPins.length }, null, 2);
   return 0;
 }
 
@@ -316,34 +323,35 @@ export async function cmdRemove(
 export async function cmdPin(
   opts: { op: "add" | "remove" | "list"; token?: string; profile?: string },
   home = larklinkHome(),
+  emit: Emit = stdEmit,
 ): Promise<number> {
   const registry = await loadRegistry(home);
   if (opts.op === "list") {
-    console.log(JSON.stringify({ ok: true, pins: registry.pins }, null, 2));
+    emit({ ok: true, pins: registry.pins }, null, 2);
     return 0;
   }
   if (!opts.token || (opts.op === "add" && !opts.profile)) {
-    console.log(JSON.stringify({ ok: false, code: "usage", message: "pin add 需要 --token 与 --profile；remove 只需 --token" }));
+    emit({ ok: false, code: "usage", message: "pin add 需要 --token 与 --profile；remove 只需 --token" });
     return 2;
   }
   if (opts.op === "add") {
     const token = opts.token;
     const profile = opts.profile;
     if (!token || !profile) {
-      console.log(JSON.stringify({ ok: false, code: "usage", message: "pin add 需要 --token 与 --profile" }));
+      emit({ ok: false, code: "usage", message: "pin add 需要 --token 与 --profile" });
       return 2;
     }
     if (!findBinding(registry, profile)) {
-      console.log(JSON.stringify({ ok: false, code: "binding-not-found", message: `绑定 ${profile} 不存在` }));
+      emit({ ok: false, code: "binding-not-found", message: `绑定 ${profile} 不存在` });
       return 2;
     }
     const updated = upsertPin(registry, { token, profile, updatedAt: new Date().toISOString() });
     await saveRegistry(updated, home);
-    console.log(JSON.stringify({ ok: true, pinned: token, profile }));
+    emit({ ok: true, pinned: token, profile });
     return 0;
   }
   const updated = { ...registry, pins: registry.pins.filter((p) => p.token !== opts.token) };
   await saveRegistry(updated, home);
-  console.log(JSON.stringify({ ok: true, removed: opts.token && findPin(registry, opts.token) ? opts.token : null }));
+  emit({ ok: true, removed: opts.token && findPin(registry, opts.token) ? opts.token : null });
   return 0;
 }

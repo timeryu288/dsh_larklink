@@ -161,7 +161,7 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 - 成功判定以 `ok == true` / 退出码 0 为准（防旧格式 `code==0` 误判）。
 - Windows 注意：`lark-cli` 是 `.ps1` wrapper，spawn 时经 `pwsh -File` 或定位其底层可执行文件（M1 实测定稿）。
 
-## 8. DSH 插件（packages/dsh-plugin）
+## 8. DSH 插件（packages/plugin，npm 名 `@timeryu288/dsh-larklink`）
 
 参照 `browser-skill-dsh-plugin` 的包结构：
 
@@ -178,11 +178,11 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 
 | 工具 | 参数 | 行为 |
 | --- | --- | --- |
-| `larklink_bindings` | `action: list/add/auth/remove/pin` + 各自参数 | 绑定管理；add/auth 返回 verification_url 由 Agent 展示 |
+| `larklink_bindings` | `action: adopt/list/health/pin-add/pin-remove/pin-list` | 无敏感绑定管理；**add/auth/remove 走用户终端**（app secret 与授权码不经模型上下文，M3 实现时确立的边界） |
 | `larklink_resolve` | `url` | 只路由不执行；返回 ResolveResult 或候选列表 |
 | `larklink_exec` | `argv[]`, `profile?`, `url?`, `dryRun?` | 执行并透传；`profile`/`url` 至少其一 |
 
-配套 `skills/larklink/SKILL.md`（DSH skill）：教模型何时 resolve、如何向用户展示歧义候选、如何处理 needsConfirmation、如何把 resolve 结果与 lark-* skill 串联（resolve → 用对应 profile 执行 docs +update 等）。**硬纪律（Q9-② 决议）**：registry 存在 ≥2 个可用绑定时，文档域 lark-cli 操作必须经 larklink（resolve/exec），禁止直接调用（防静默串号；技术上不可强制，靠纪律 + 审计对账发现）；单绑定环境无此约束（默认 profile 即唯一）。
+配套 SKILL **内嵌于插件并随 `ctx.get("skills").register({source: "bundled"})` 注册**（M3 实现对齐 browser-skill 插件先例；skills/ 目录形态废弃）：教模型何时 resolve、如何向用户展示歧义候选、如何处理 needsConfirmation、如何把 resolve 结果与 lark-* skill 串联（resolve → 用对应 profile 执行 docs +update 等）。**硬纪律（Q9-② 决议）**：registry 存在 ≥2 个可用绑定时，文档域 lark-cli 操作必须经 larklink（resolve/exec），禁止直接调用（防静默串号；技术上不可强制，靠纪律 + 审计对账发现）；单绑定环境无此约束（默认 profile 即唯一）。
 
 ## 9. 安全设计
 

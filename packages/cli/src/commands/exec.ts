@@ -8,14 +8,9 @@ import { parseEnvelope, type LarkRunner } from "../larkcli.js";
 import { safeJson } from "../larkcli.js";
 import { loadRegistry, larklinkHome } from "../store.js";
 import { appendAudit } from "../audit.js";
-import {
-  EXEC_DOMAINS,
-  checkTargets,
-  computeConfirmationId,
-  domainOf,
-  extractTargets,
-  findArgvAs,
-} from "../execguard.js";
+import { EXEC_DOMAINS, checkTargets, computeConfirmationId, domainOf, extractTargets, findArgvAs } from "../execguard.js";
+import type { Emit } from "./bindings.js";
+import { stdEmit } from "./bindings.js";
 
 export interface ExecOptions {
   profile?: string;
@@ -29,12 +24,11 @@ export interface ExecOptions {
   rawArgs: string[];
 }
 
-function fail(code: string, message: string, extra?: Record<string, unknown>): number {
-  console.log(JSON.stringify({ ok: false, code, message, ...extra }, null, 2));
-  return 2;
-}
-
-export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = larklinkHome()): Promise<number> {
+export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = larklinkHome(), emit: Emit = stdEmit): Promise<number> {
+  const fail = (code: string, message: string, extra?: Record<string, unknown>): number => {
+    emit({ ok: false, code, message, ...extra }, null, 2);
+    return 2;
+  };
   const rawArgs = opts.rawArgs;
   if (rawArgs.length === 0) return fail("usage", "缺少命令：exec -- <lark-cli 命令参数…>");
 
@@ -63,8 +57,7 @@ export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = lark
     try {
       const result = resolve(registry, opts.url, { explicitProfile: opts.profile });
       if (result.status === "ambiguous") {
-        console.log(JSON.stringify({ ok: false, code: "ambiguous", message: result.reason, candidates: result.candidates, parsed: result.parsed, next: "larklink resolve 后用 --profile 显式指定" }, null, 2));
-        return 3;
+        emit({ ok: false, code: "ambiguous", message: result.reason, candidates: result.candidates, parsed: result.parsed, next: "larklink resolve 后用 --profile 显式指定" }, null, 2);        return 3;
       }
       profile = result.profile;
       confidence = result.confidence;
@@ -72,12 +65,12 @@ export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = lark
       if (result.bindingStatus !== "ready") {
         // Q1：不换绑定，提示修复
         await appendAudit({ kind: "exec", profile, outcome: "blocked-auth", confidence, domain, as }, home);
-        console.log(JSON.stringify({ ok: false, code: "binding-needs-repair", profile, bindingStatus: result.bindingStatus, message: `绑定 ${profile} 状态 ${result.bindingStatus}，请 larklink bindings auth ${profile} 修复后重试（不自动换绑定，Q1）` }, null, 2));
+        emit({ ok: false, code: "binding-needs-repair", profile, bindingStatus: result.bindingStatus, message: `绑定 ${profile} 状态 ${result.bindingStatus}，请 larklink bindings auth ${profile} 修复后重试（不自动换绑定，Q1）` }, null, 2);
         return 2;
       }
     } catch (e) {
       const err = e as { code?: string; message?: string };
-      console.log(JSON.stringify({ ok: false, code: err.code ?? "resolve-error", message: err.message }, null, 2));
+      emit({ ok: false, code: err.code ?? "resolve-error", message: err.message }, null, 2);
       return 2;
     }
   } else if (opts.profile !== undefined) {
@@ -97,7 +90,7 @@ export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = lark
     const check = checkTargets(targets, parsed);
     if (!check.ok) {
       await appendAudit({ kind: "exec", profile, outcome: "blocked-target-mismatch", confidence, domain, as, argv: rawArgs }, home);
-      console.log(JSON.stringify({ ok: false, code: check.error.code, message: check.error.message }, null, 2));
+      emit({ ok: false, code: check.error.code, message: check.error.message }, null, 2);
       return 2;
     }
   }
@@ -117,7 +110,7 @@ export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = lark
   const finalArgv = ["--profile", profile, ...rawArgs, "--as", as, ...(opts.yes ? ["--yes"] : [])];
 
   if (opts.dryRun) {
-    console.log(JSON.stringify({ ok: true, status: "dry-run", profile, confidence, as, argv: finalArgv, confirmationId }, null, 2));
+    emit({ ok: true, status: "dry-run", profile, confidence, as, argv: finalArgv, confirmationId }, null, 2);
     return 0;
   }
 
@@ -164,6 +157,6 @@ export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = lark
   if (status === "timeout-unknown") {
     out["message"] = "超时被击杀，服务端结果未知（Q7）：禁止直接重试同 argv；先只读核查（如 drive +inspect）确认实际状态。";
   }
-  console.log(JSON.stringify(out, null, 2));
+  emit(out, null, 2);
   return exit;
 }

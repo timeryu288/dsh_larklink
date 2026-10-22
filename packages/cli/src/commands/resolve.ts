@@ -6,6 +6,8 @@ import type { LarkRunner } from "../larkcli.js";
 import { safeJson } from "../larkcli.js";
 import { loadRegistry, larklinkHome, saveRegistry } from "../store.js";
 import { appendAudit } from "../audit.js";
+import type { Emit } from "./bindings.js";
+import { stdEmit } from "./bindings.js";
 
 export interface ResolveOptions {
   input: string;
@@ -50,7 +52,7 @@ export async function probeCandidate(
   return classifyProbe(res);
 }
 
-export async function cmdResolve(runner: LarkRunner, opts: ResolveOptions, home = larklinkHome()): Promise<number> {
+export async function cmdResolve(runner: LarkRunner, opts: ResolveOptions, home = larklinkHome(), emit: Emit = stdEmit): Promise<number> {
   let registry = await loadRegistry(home);
   const result = resolve(registry, opts.input, {
     explicitProfile: opts.explicitProfile,
@@ -72,14 +74,14 @@ export async function cmdResolve(runner: LarkRunner, opts: ResolveOptions, home 
       candidates = probed;
     }
     await appendAudit({ kind: "resolve", outcome: "ambiguous", confidence: "none", target: result.parsed.token, argv: [opts.input], message: `候选：${candidates.map((c) => c.profile).join(", ")}` }, home);
-    console.log(JSON.stringify({
+    emit({
       ok: true,
       status: "ambiguous",
       parsed: result.parsed,
       candidates,
       reason: result.reason,
       next: `询问用户后：larklink resolve <input> --asked <profile> --pin`,
-    }, null, 2));
+    }, null, 2);
     return 3;
   }
 
@@ -99,7 +101,7 @@ export async function cmdResolve(runner: LarkRunner, opts: ResolveOptions, home 
     target: result.parsed.token,
     argv: [opts.input],
   }, home);
-  console.log(JSON.stringify({
+  emit({
     ok: true,
     status: "resolved",
     profile: result.profile,
@@ -110,7 +112,7 @@ export async function cmdResolve(runner: LarkRunner, opts: ResolveOptions, home 
     parsed: result.parsed,
     wikiUnwrapNeeded: result.parsed.wikiUnwrapNeeded,
     pinned: opts.pin === true,
-  }, null, 2));
+  }, null, 2);
   return 0;
 }
 
