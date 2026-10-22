@@ -71,14 +71,14 @@
       "appId": "cli_a93...",
       "userName": "于跃",               // auth status 同步
       "openId": "ou_2a08...",
-      "tenantHints": ["mycompany.feishu.cn"], // 可选：租户域名提示
-      "defaultForBrand": true,         // 该品牌的默认账号
+      "tenantHints": ["mycompany.feishu.cn"], // 可选：租户域名提示，仅展示辅助不参与选择
+      "adopted": true,                // 导入绑定（adopt 自已有 profile；remove 默认不删原 profile，Q8）
       "status": "ready",               // ready | needs_refresh | unauthorized | incomplete（health 时刷新；incomplete 不可被路由选中）
       "addedAt": "2026-10-22T15:00:00+08:00"
     }
   ],
-  "pins": [                            // 歧义消解的学习记忆
-    { "urlPattern": "feishu.cn/docx/Abc123", "profile": "work-feishu",
+  "pins": [                            // 文档账号偏好（Q10：永久无 TTL；键=归一化 token，跨域名命中）
+    { "token": "Abc123", "profile": "work-feishu",
       "updatedAt": "..." }
   ]
 }
@@ -94,10 +94,12 @@
 输入: url 或裸 token（纯自然语言描述不支持 v1，由 Agent 追问取得链接/token）
 1. 规范化 → 解析 domain / path / token / resourceType
    resourceType ← 路径前缀（/docx/ /doc/ /wiki/ /sheets/ /base/ /slides/
-                  /mindnotes/ /whiteboard/ /drive/folder/ /minutes/）
-                  或裸 token 前缀（doxcn/shtcn/wikcn…，M1 与 lark-drive SKILL 对照定稿）
+                  /mindnotes/ /whiteboard/ /drive/folder/ /minutes/；
+                  /page/ 为妙搭应用链接，识别后以 unsupported-resource 拒绝——非文档域）
+                  或裸 token 前缀（doxcn/doccn/wikcn/shtcn/bascn/fldcn/obcn/slides，
+                  已对照 lark-drive SKILL 与实例定稿；slides 为宽松前缀）
 2. brand 判定:
-     *.feishu.cn / *.larksuite.com → 对应品牌
+     *.feishu.cn → feishu；*.larksuite.com / *.larkoffice.com → lark
      doubao.com、其它域名、裸 token → 无品牌证据
 3. 候选集: brand 已知 → 该品牌全部绑定；brand 未知 → 全部绑定
 4. 消歧（按优先级）:
