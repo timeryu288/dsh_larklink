@@ -30,6 +30,10 @@
 
 已通过官方 v1.0.76 源码核实：profile add 禁止重复 App ID；token 存储键为 App ID + 用户 open_id，不包含 profile 名。已更正 design.md §2。依据：https://github.com/larksuite/cli/blob/v1.0.76/cmd/profile/add.go 与 https://github.com/larksuite/cli/blob/v1.0.76/internal/auth/token_store.go 。进一步源码证据：cmd/auth/login.go 的 syncLoginUserToProfile 将 profile 用户列表写成单元素，新用户登录会删除旧用户 token；internal/core/config.go 使用 Users[0] 作为有效用户。因此通过现有正式 profile/login 路径无法为同一应用同时维持多个登录用户。未进行真实双用户登录实验；不通过手工复制配置或全局切换用户来假装独立。来源：https://github.com/larksuite/cli/blob/v1.0.76/cmd/auth/login.go 与 https://github.com/larksuite/cli/blob/v1.0.76/internal/core/config.go 。
 
+## Q6：执行身份硬约束与确认绑定
+
+决定：① 用户选择 B（2026-10-22）——允许应用身份执行，但必须显式声明；实现为工具级参数 `as`（默认 user），argv 内 `--as` 剥离并拒绝，审计分身份标记。② 用户确认实施（2026-10-22）——confirmationId 指纹绑定，重试指纹不一致即拒绝。均已入 design.md §7/§9。
+
 ## Q5：resolve 与 exec 的一致性守卫
 
 决定：用户答复 A，接受推荐包（2026-10-22）：① argv 目标提取比对（白名单 flag，mismatch 拒绝，fail-open）；② 显式 profile + url 并传时显式优先、品牌校验不豁免；③ exec 不信任上次 resolve 快照，带 url 时内部重新 resolve 并回显实际 profile + confidence。已入 design.md §7。profile 改名/绑定状态漂移的注册表一致性归入生命周期题（后续）。

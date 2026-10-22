@@ -147,7 +147,8 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 - **不信任上次 resolve 快照**：resolve 与 exec 是两次独立调用，其间 pin/绑定状态可能被其他会话改变。exec 带 url 时内部按**当时最新状态**重新 resolve；只带 profile 时不路由直接执行。
 - spawn 用 **argv 数组**，禁止 shell 字符串拼接（防注入，也符合 lark-shared 对 exit 10 重试的要求）。
 - 结果透传：stdout JSON / stderr JSON / 退出码原样返回，并在外层信封附上 `{ profile, confidence, argv, durationMs }`，供 Agent 核对实际使用的身份。
-- **exit 10 协议透传**：检测 `error.type == "confirmation"` → 返回 `needsConfirmation` 结构（含 action/risk/参数预览），由 Agent 向用户确认；用户同意后由 Agent 显式重试原 argv + `--yes`。绝不静默放行。
+- **执行身份（Q6-① 决议 B）**：exec 默认 `--as user`；允许应用身份（bot）执行，但必须通过工具级参数 `as: "user" | "bot"` 显式声明。argv 内出现的 `--as` 一律剥离并拒绝（防夹带，显式声明只有工具参数一个入口）。应用身份操作仍走同一绑定的路由（该绑定的应用），审计日志按身份分别标记；bot 无法访问用户个人资源由平台权限自然拦截。
+- **exit 10 协议透传**：检测 `error.type == "confirmation"` → 返回 `needsConfirmation` 结构（含 action/risk/参数预览）**及 `confirmationId`（argv+profile 指纹哈希）**，由 Agent 向用户确认；用户同意后由 Agent 显式重试原 argv + `--yes` 并携带该 confirmationId，**指纹不一致即拒绝**——用户同意的是他看到的那条命令，确认不可挪用到其他请求。绝不静默放行。
 - 成功判定以 `ok == true` / 退出码 0 为准（防旧格式 `code==0` 误判）。
 - Windows 注意：`lark-cli` 是 `.ps1` wrapper，spawn 时经 `pwsh -File` 或定位其底层可执行文件（M1 实测定稿）。
 
@@ -177,7 +178,7 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 ## 9. 安全设计
 
 1. **凭证零落盘**：appSecret 仅 stdin 传入 lark-cli；registry / 日志 / 工具结果中不得出现 token、secret。
-2. **门禁透传**：exit 10 → needsConfirmation → 用户显式同意 → `--yes` 重试原 argv；拒绝即终止。
+2. **门禁透传**：exit 10 → needsConfirmation（含 confirmationId 指纹）→ 用户显式同意 → `--yes` 重试原 argv 且指纹一致；拒绝即终止，确认不可挪用。
 3. **防串号**：写操作前强制 resolve 校验「当前 profile 的 brand/租户与 URL 匹配」；不匹配即拒绝执行并要求人工确认。
 4. **审计日志**：`~/.larklink/audit.jsonl`（可关闭），记录每次 resolve 与 exec 的决策依据与命令摘要（不含敏感参数值）。
 5. **最小授权**：绑定引导按业务域（`--domain docs,drive`）而非全量 scope。
