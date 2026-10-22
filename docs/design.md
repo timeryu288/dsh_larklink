@@ -153,6 +153,7 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
   - 批量跨文档/跨绑定：逐个 resolve+exec（Q3 已定），失败不中断，最后汇总每文档成功/失败清单给用户处置；exec 无跨请求事务，此为 Agent 编排纪律（SKILL）。
   - `overwrite` / `block_replace` / 整段替换类写操作前**必须 fresh fetch 最新内容**做增量合并（预览-提交间隙的并发修改防护，lark-cli 文档域不暴露版本号，纪律兜底）；`str_replace` 类目标文本不存在会失败而非误覆盖，相对安全。
 - **执行身份（Q6-① 决议 B）**：exec 默认 `--as user`；允许应用身份（bot）执行，但必须通过工具级参数 `as: "user" | "bot"` 显式声明。argv 内出现的 `--as` 一律剥离并拒绝（防夹带，显式声明只有工具参数一个入口）。应用身份操作仍走同一绑定的路由（该绑定的应用），审计日志按身份分别标记；bot 无法访问用户个人资源由平台权限自然拦截。
+- **命令白名单（Q9-① 决议 A）**：v1 仅放行文档域命令——`docs / drive / sheets / markdown / slides / base / whiteboard / wiki / mindnotes`；其他域（im/mail/task 等）拒绝并提示走原生 lark-cli。白名单是 Q5-Q7 守卫之外的纵深防御最外层，M4 视使用情况放开。
 - **exit 10 协议透传**：检测 `error.type == "confirmation"` → 返回 `needsConfirmation` 结构（含 action/risk/参数预览）**及 `confirmationId`（argv+profile 指纹哈希）**，由 Agent 向用户确认；用户同意后由 Agent 显式重试原 argv + `--yes` 并携带该 confirmationId，**指纹不一致即拒绝**——用户同意的是他看到的那条命令，确认不可挪用到其他请求。绝不静默放行。
 - 成功判定以 `ok == true` / 退出码 0 为准（防旧格式 `code==0` 误判）。
 - Windows 注意：`lark-cli` 是 `.ps1` wrapper，spawn 时经 `pwsh -File` 或定位其底层可执行文件（M1 实测定稿）。
@@ -167,7 +168,7 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 ```yaml
 - insert:
     - id: larklink
-      name: "dsh-larklink"   # 必须与发布包名一致
+      name: "@timeryu288/dsh-larklink"   # 必须与发布包名一致（Q9-③ 决议；@ 开头需引号）
 ```
 
 - 注册三个模型工具（`defineTool`）：
@@ -178,7 +179,7 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 | `larklink_resolve` | `url` | 只路由不执行；返回 ResolveResult 或候选列表 |
 | `larklink_exec` | `argv[]`, `profile?`, `url?`, `dryRun?` | 执行并透传；`profile`/`url` 至少其一 |
 
-配套 `skills/larklink/SKILL.md`（DSH skill）：教模型何时 resolve、如何向用户展示歧义候选、如何处理 needsConfirmation、如何把 resolve 结果与 lark-* skill 串联（resolve → 用对应 profile 执行 docs +update 等）。
+配套 `skills/larklink/SKILL.md`（DSH skill）：教模型何时 resolve、如何向用户展示歧义候选、如何处理 needsConfirmation、如何把 resolve 结果与 lark-* skill 串联（resolve → 用对应 profile 执行 docs +update 等）。**硬纪律（Q9-② 决议）**：registry 存在 ≥2 个可用绑定时，文档域 lark-cli 操作必须经 larklink（resolve/exec），禁止直接调用（防静默串号；技术上不可强制，靠纪律 + 审计对账发现）；单绑定环境无此约束（默认 profile 即唯一）。
 
 ## 9. 安全设计
 
@@ -219,8 +220,8 @@ dsh_larklink/
 
 ## 12. 开放问题（需要拍板）
 
-1. **`larklink_exec` 的开放度**：透传任意 lark-cli 命令（灵活，靠门禁兜底）还是先收敛为白名单域（docs/drive）？→ 倾向：M3 先白名单，M4 视使用情况放开。
+1. **`larklink_exec` 的开放度**：已决（审查 Q9-①=A）——v1 白名单限文档域（docs/drive/sheets/markdown/slides/base/whiteboard/wiki/mindnotes），其他域走原生 lark-cli；M4 视使用情况放开。
 2. **歧义默认策略**：已决（审查 Q1=A）——本次显式指定 > 文档级 pin > 首次询问并可记住；记住的账号失效时修复授权或用户改选，不自动换账号写入。
 3. **doubao.com 链接 / 裸 token**：已决（审查 Q3）——不做"默认 feishu"猜测；pins → 唯一绑定直选（sole）→ 询问并 pin。纯自然语言描述不进 v1，由 Agent 追问取得链接或 token。
-4. **包名**：npm 发布名用 `dsh-larklink` 还是 `@timeryu288/dsh-larklink`（scope 版不占用裸名）？
+4. **包名**：已决（审查 Q9-③）——`@timeryu288/dsh-larklink`（scope 版，不占裸名、可私有发布）。
 5. **registry 位置**：`~/.larklink/` 还是放进 DSH profile 数据目录（随 profile 隔离）？→ 倾向前者：跨 profile/会话共享绑定。

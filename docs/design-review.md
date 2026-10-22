@@ -11,7 +11,7 @@
 5. 操作范围和授权：读写权限分别验证、应用身份回退、确认与具体请求绑定，不能仅依赖 CLI 高风险门禁。（已决：Q6）
 6. 写入可靠性：并发修改、预览与提交之间变化、超时后结果未知、部分成功、重试与幂等、批量跨账号操作。（已决：Q7）
 7. 绑定生命周期：创建应用与用户授权分离；授权流程恢复；插件解绑与删除用户已有 CLI profile 分离。（已决：Q8）
-8. 插件集成与范围：工具是否必须经过路由、已有 lark-* skills 的直接 CLI 路径、首版可用 UI 与文档修改验收。
+8. 插件集成与范围：工具是否必须经过路由、已有 lark-* skills 的直接 CLI 路径、首版可用 UI 与文档修改验收。（已决：Q9；genui 面板维持 M4 可选项）
 9. 数据生命周期：文档级记忆失效、跨 DSH 配置共享、审计脱敏、缓存并发与持久化。
 
 以上为待审查项，不代表已定实现方案。后续问题随用户回答调整顺序。
@@ -29,6 +29,10 @@
 ## 证据状态更正
 
 已通过官方 v1.0.76 源码核实：profile add 禁止重复 App ID；token 存储键为 App ID + 用户 open_id，不包含 profile 名。已更正 design.md §2。依据：https://github.com/larksuite/cli/blob/v1.0.76/cmd/profile/add.go 与 https://github.com/larksuite/cli/blob/v1.0.76/internal/auth/token_store.go 。进一步源码证据：cmd/auth/login.go 的 syncLoginUserToProfile 将 profile 用户列表写成单元素，新用户登录会删除旧用户 token；internal/core/config.go 使用 Users[0] 作为有效用户。因此通过现有正式 profile/login 路径无法为同一应用同时维持多个登录用户。未进行真实双用户登录实验；不通过手工复制配置或全局切换用户来假装独立。来源：https://github.com/larksuite/cli/blob/v1.0.76/cmd/auth/login.go 与 https://github.com/larksuite/cli/blob/v1.0.76/internal/core/config.go 。
+
+## Q9：插件边界（白名单/共存纪律/包名）
+
+决定：① A——v1 白名单限文档域（docs/drive/sheets/markdown/slides/base/whiteboard/wiki/mindnotes），其他域走原生 lark-cli，M4 视情况放开；② 同意——SKILL 硬纪律：≥2 可用绑定时文档域操作必须经 larklink，禁止直接调 lark-cli（纪律+审计对账）；③ 包名 `@timeryu288/dsh-larklink`。（2026-10-22）已入 design.md §7/§8/§12。
 
 ## Q8：绑定生命周期边界
 
