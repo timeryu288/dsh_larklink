@@ -1277,6 +1277,123 @@ function registerLarklinkTools(deps) {
 	});
 	return disposers;
 }
+// src/routes.ts
+const ROUTE_BASE = "/larklink";
+function sendJson(res, status, body) {
+	res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+	res.end(JSON.stringify(body));
+}
+/** 同源栅栏：origin/host 不一致或跨站 sec-fetch 拒绝（照 browser-skill fence 语义）。 */
+function fenceViolation(req) {
+	const origin = req.headers["origin"];
+	if (typeof origin === "string" && origin !== "") try {
+		const o = new URL(origin);
+		const host = req.headers["host"];
+		if (o.host !== host) return "origin mismatch";
+	} catch {
+		return "bad origin";
+	}
+	const site = req.headers["sec-fetch-site"];
+	if (typeof site === "string" && site !== "same-origin" && site !== "none") return `cross-site ${site}`;
+}
+function readBody(req) {
+	return new Promise((resolve, reject) => {
+		let data = "";
+		req.on("data", (c) => data += c.toString("utf8"));
+		req.on("end", () => resolve(data));
+		req.on("error", reject);
+	});
+}
+function captureEmit() {
+	let value;
+	const emit = (p) => {
+		value = p;
+	};
+	return {
+		emit,
+		payload: () => value
+	};
+}
+function registerLarklinkRoutes(deps) {
+	const { ctx, runner, home } = deps;
+	let disposed = false;
+	const disposers = [];
+	ctx.inject(["webServer"], (injected) => {
+		const webServer = injected.get("webServer");
+		if (webServer === null || typeof webServer.register !== "function") return () => {};
+		if (disposed) return () => {};
+		const route = (method, path, handler) => {
+			const dispose = webServer.register({
+				kind: "exact",
+				path,
+				handler: (req, res) => {
+					const violation = fenceViolation(req);
+					if (violation !== void 0) {
+						sendJson(res, 403, {
+							ok: false,
+							error: `forbidden: ${violation}`
+						});
+						return;
+					}
+					if ((req.method ?? "GET") !== method) {
+						sendJson(res, 405, {
+							ok: false,
+							error: "method not allowed"
+						});
+						return;
+					}
+					Promise.resolve(handler(req, res)).catch((e) => {
+						sendJson(res, 500, {
+							ok: false,
+							error: e.message
+						});
+					});
+				}
+			});
+			disposers.push(typeof dispose === "function" ? dispose : () => {});
+		};
+		route("GET", `${ROUTE_BASE}/bindings`, async (req, res) => {
+			await readBody(req).catch(() => "");
+			const live = new URL(req.url ?? "/", "http://localhost").searchParams.get("live") === "1";
+			const cap = captureEmit();
+			await cmdList({
+				runner,
+				home
+			}, {
+				fast: !live,
+				health: false
+			}, cap.emit);
+			sendJson(res, 200, cap.payload());
+		});
+		route("POST", `${ROUTE_BASE}/adopt`, async (req, res) => {
+			await readBody(req);
+			const cap = captureEmit();
+			await cmdAdopt({
+				runner,
+				home
+			}, {}, cap.emit);
+			sendJson(res, 200, cap.payload());
+		});
+		route("POST", `${ROUTE_BASE}/health`, async (req, res) => {
+			await readBody(req);
+			const cap = captureEmit();
+			await cmdList({
+				runner,
+				home
+			}, { health: true }, cap.emit);
+			sendJson(res, 200, cap.payload());
+		});
+		return () => {
+			for (const d of [...disposers].reverse()) d();
+			disposers.length = 0;
+		};
+	});
+	return () => {
+		disposed = true;
+		for (const d of [...disposers].reverse()) d();
+		disposers.length = 0;
+	};
+}
 // src/skill-content.ts
 /** 内嵌 SKILL 内容（随插件注册到 DSH skills 服务，source: bundled）。 */
 const LARKLINK_SKILL_NAME = "larklink";
@@ -1357,6 +1474,11 @@ function apply(ctx, config = {}, options = {}) {
 		});
 		if (typeof unregister === "function") disposers.push(unregister);
 	}
+	disposers.push(registerLarklinkRoutes({
+		ctx,
+		runner: options.runner ?? defaultLarkRunner,
+		home: config.home || void 0
+	}));
 	ctx.effect(() => () => {
 		for (const dispose of [...disposers].reverse()) dispose();
 	});

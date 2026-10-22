@@ -184,6 +184,8 @@ larklink exec [--profile <p>] [--url <u>] [--dry-run] -- <lark-cli 子命令...>
 
 配套 SKILL **内嵌于插件并随 `ctx.get("skills").register({source: "bundled"})` 注册**（M3 实现对齐 browser-skill 插件先例；skills/ 目录形态废弃）：教模型何时 resolve、如何向用户展示歧义候选、如何处理 needsConfirmation、如何把 resolve 结果与 lark-* skill 串联（resolve → 用对应 profile 执行 docs +update 等）。**硬纪律（Q9-② 决议）**：registry 存在 ≥2 个可用绑定时，文档域 lark-cli 操作必须经 larklink（resolve/exec），禁止直接调用（防静默串号；技术上不可强制，靠纪律 + 审计对账发现）；单绑定环境无此约束（默认 profile 即唯一）。
 
+**genui 面板（M3.5）**：webServer 路由 `/larklink/bindings|adopt|health`（同源栅栏：origin/host 一致 + sec-fetch-site 非跨站；照 browser-skill fence 语义）+ web client（`exports["./client"]` + `dsh.client` 声明 + `window.__ModuleLoader__` 工厂）注册 sidebar 右侧「Lark 绑定」页签。面板只做无敏感操作；add/auth/remove 仍限终端。
+
 ## 9. 安全设计
 
 1. **凭证零落盘**：appSecret 仅 stdin 传入 lark-cli；registry / 日志 / 工具结果中不得出现 token、secret。

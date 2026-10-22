@@ -15,6 +15,9 @@
       "types": "./lib/index.d.mts",
       "default": "./lib/index.mjs"
     },
+    "./client": {
+      "default": "./lib/client.cjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -25,10 +28,19 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [],
+      "external": [
+        "react",
+        "react-dom"
+      ]
     }
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node scripts/build-client.mjs",
+    "build:client": "node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
@@ -47,9 +59,11 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
-    "@timeryu288/larklink-cli": "workspace:*",
-    "@timeryu288/larklink-core": "workspace:*",
     "@types/node": "^24.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "tsdown": "^0.22.14",
     "typescript": "^5.8.0"
   }

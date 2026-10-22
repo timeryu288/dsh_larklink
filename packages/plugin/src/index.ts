@@ -5,6 +5,7 @@
 import Schema from "@deepseek-ai/schemastery";
 import { defaultLarkRunner } from "@timeryu288/larklink-cli/larkcli";
 import { registerLarklinkTools, type LarkRunnerLike } from "./tools.js";
+import { registerLarklinkRoutes } from "./routes.js";
 import {
   LARKLINK_SKILL_DESCRIPTION,
   LARKLINK_SKILL_MARKDOWN,
@@ -61,6 +62,9 @@ export function apply(ctx: PluginCtx, config: { home?: string; execTimeoutMs?: n
     });
     if (typeof unregister === "function") disposers.push(unregister as () => void);
   }
+
+  // genui 面板后端路由（无 webServer 的组合里优雅降级）
+  disposers.push(registerLarklinkRoutes({ ctx: ctx as never, runner: options.runner ?? defaultLarkRunner, home: config.home || undefined }));
 
   ctx.effect(() => () => {
     for (const dispose of [...disposers].reverse()) dispose();

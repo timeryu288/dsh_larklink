@@ -48,8 +48,9 @@ DSH Agent ── larklink_* 工具 ── dsh-plugin（薄适配）
 - [x] **M0** 仓库初始化 + 设计方案 + 十轮设计审查（[design-review](docs/design-review.md)，Q1-Q10 全决）
 - [x] **M1** core：解析器 + 注册表 + resolve（44 单测）
 - [x] **M2** CLI：绑定生命周期 + exec 守卫链（真机 adopt/health/resolve 冒烟通过）
-- [x] **M3** DSH 插件三工具 + 内嵌 SKILL（bundle 构建通过；npm 发布与双账号端到端验收待做）
-- [ ] **M4** npm 发布、真机双账号端到端验收、（可选）genui 绑定管理面板
+- [x] **M3** DSH 插件三工具 + 内嵌 SKILL（bundle 构建通过）
+- [x] **M3.5** genui 绑定管理面板：webServer 路由（`/larklink/bindings|adopt|health`，同源栅栏）+ sidebar「Lark 绑定」页签（状态灯/账号列表/adopt/health/pins；add/auth/remove 仍限终端）
+- [ ] **M4** npm 发布（待 npm login）、真机双账号端到端验收
 
 ## 快速上手（开发）
 
