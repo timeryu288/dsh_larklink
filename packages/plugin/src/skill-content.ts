@@ -3,31 +3,45 @@
 export const LARKLINK_SKILL_NAME = "larklink";
 
 export const LARKLINK_SKILL_DESCRIPTION =
-  "Multi-account Feishu/Lark document operations routed through larklink tools: resolve which bound account operates on a document URL/token, then execute guarded lark-cli document commands. Use whenever the user provides a feishu.cn / larksuite.com / larkoffice.com / doubao.com document link or a bare token (doxcn/shtcn/wikcn/bascn...) and the machine has more than one lark binding.";
+  "Feishu/Lark document operations + login lifecycle, routed through larklink tools. Use PROACTIVELY, regardless of how many accounts are bound, whenever: (1) the user provides a feishu.cn / larksuite.com / larkoffice.com / doubao.com document link or a bare token (doxcn/shtcn/wikcn/bascn/doccn/fldcn/obcn...), or asks to read/edit/create any Feishu/Lark document, sheet, base, wiki or slides; (2) any lark-cli or lark-* skill operation fails with auth errors, token expiry, needs_refresh, unauthorized, or not-logged-in — larklink triggers the QR login flow automatically (opens the browser; no terminal needed).";
 
-export const LARKLINK_SKILL_MARKDOWN = `# larklink —— 多账号飞书/Lark 文档操作路由
+export const LARKLINK_SKILL_MARKDOWN = `# larklink —— 飞书/Lark 文档操作路由与登录管理
 
-## 何时使用
+## 何时使用（无条件触发，不看绑定数量）
 
 - 用户给出 feishu.cn / larksuite.com / larkoffice.com / doubao.com 的文档链接，或 doxcn / doccn / wikcn / shtcn / bascn / fldcn / obcn 裸 token，要求读取或修改
-- 本机有多个 lark 账号（绑定）时，一切文档域操作必须经 larklink 路由
+- 用户要求创建/编辑飞书文档、表格、Base、知识库、幻灯片
+- 任何 lark-cli / lark-* skill 操作报授权错误（未登录 / token 过期 / needs_refresh / unauthorized / incomplete）——立即走本 skill 的登录修复流程
+
+**单一绑定也要走 larklink**：larklink 统一提供路由、授权生命周期管理（自动触发扫码登录）、目标守卫与审计。不要因为"只有一个账号"就绕过。
 
 ## 硬纪律（多账号防串号）
 
-1. registry 存在 **≥2 个可用绑定**时：文档域操作必须 \`larklink_resolve\` → \`larklink_exec\`，**禁止**直接调用 lark-cli 文档命令（会静默打到默认账号）。
-2. 单一绑定时：默认 profile 即唯一账号，可直接用 lark-* skills，无需 larklink。
-3. 身份选择优先级：用户显式指定 > 文档 pin > 唯一绑定 > 询问用户。**能力 ≠ 意图**：探测结果、ready 状态、tenantHint 永不构成自动换号理由。绑定失效 → 提示用户修复授权，绝不换绑定重试。
-4. 执行身份默认 user；以应用身份（bot）执行必须用户明确要求（\`as: "bot"\`），绝不静默回退。
+1. 一切文档域操作必须 \`larklink_resolve\` → \`larklink_exec\`，**禁止**直接调用 lark-cli 文档命令（多账号时会静默打到默认账号，单账号时绕过授权管理与审计）。
+2. 身份选择优先级：用户显式指定 > 文档 pin > 唯一绑定 > 询问用户。**能力 ≠ 意图**：探测结果、ready 状态、tenantHint 永不构成自动换号理由。绑定失效 → 走登录修复流程，绝不换绑定重试。
+3. 执行身份默认 user；以应用身份（bot）执行必须用户明确要求（\`as: "bot"\`），绝不静默回退。
 
 ## 标准流程
 
 1. \`larklink_resolve(input)\` → \`resolved\`（profile / confidence / wikiUnwrapNeeded）或 \`ambiguous\`（candidates 含 probe 标注：accessible / no-permission / auth-failed / timeout）
+   - 报 \`no-routable-binding\` 且本机有 lark-cli profile：先 \`larklink_bindings(action=adopt)\` 导入再重试 resolve
+   - 全新机器（无任何 profile）：提示用户在终端执行 \`larklink bindings add\`（app secret 不经模型）
 2. ambiguous → 把候选与标注呈现给用户选择；选择后 \`larklink_resolve(input, askedProfile, pin=true)\` 记住偏好
 3. \`larklink_exec(args, url 或 profile)\` 执行 lark-cli 文档命令，返回信封：
    - \`needs-confirmation\`：向用户展示 action 与参数预览；用户明确同意后，**原样命令** + \`yes=true\` + 返回的 \`confirmationId\`（指纹不符会被拒绝——确认不可挪用）
    - \`timeout-unknown\`：禁止直接重试同命令；先只读核查（drive +inspect / docs +fetch）确认服务端实际状态
    - \`error\`：读 error 字段修复参数或授权后重试
 4. wiki 链接（wikcn…）先 \`drive +inspect\` 解包出真实 token/type 再路由到对应命令
+
+## 登录修复（未登录/授权失效时自动触发，不请用户去终端）
+
+只要 resolve / exec / 探测出现 \`binding-needs-repair\`、\`auth-failed\`、\`needs_refresh\`、\`unauthorized\`、\`incomplete\` 任一信号，立即：
+
+1. \`larklink_bindings(action=auth-start, profile=<绑定>)\` —— 自动打开系统浏览器并生成二维码（envelope 含 verificationUrl、qrcode 路径、expiresInSeconds）。把 verificationUrl 作为可点链接给用户；若环境支持读图，用 read_image 展示 qrcode PNG；浏览器没自动打开时提醒用户手动点链接或扫码
+2. 等用户在浏览器完成授权确认（10 分钟内有效）。用户回复完成后：\`larklink_bindings(action=auth-complete, profile=<绑定>)\`（device_code 已在插件侧暂存，无需携带；过期会报 pending-auth-expired，届时重新 auth-start）
+3. auth-complete 返回 ready 后**原样重试**之前的操作
+
+注意：auth-complete 失败通常意味着用户还没在浏览器确认——提示用户确认后再次 auth-complete，不要立刻重新发起。绝不静默换绑定。
 
 ## 写操作纪律
 
@@ -43,7 +57,6 @@ docs · drive · sheets · markdown · slides · base · whiteboard · wiki · m
 
 ## 绑定管理
 
-- 新增账号、授权修复（扫码 split-flow）、删除绑定：**让用户在终端执行** \`larklink bindings add|auth|remove\` —— app secret 与授权码不经模型上下文
-- 工具 \`larklink_bindings\` 仅做无敏感操作：adopt（导入既有 profile）/ list / health / pin 管理
-- 绑定授权过期（needs_refresh/unauthorized）：报告用户执行 \`larklink bindings auth <profile>\`，不要反复重试
+- \`larklink_bindings\` 工具动作：adopt（导入既有 profile）/ list / health / pin 管理 / **auth-start / auth-complete（扫码登录与授权修复，无密钥经手）**
+- 仅以下操作让用户在终端执行：\`larklink bindings add\`（新建应用，app secret 走 stdin）、\`larklink bindings remove\`（破坏性删除）
 `;

@@ -4,7 +4,8 @@
  * 用法：
  *   larklink bindings adopt [--profile <名>]…
  *   larklink bindings add --name <名> --brand <feishu|lark> --app-id <id> --app-secret-stdin
- *   larklink bindings auth <profile> [--domain docs] [--device-code <code>]
+ *   larklink bindings auth <profile> [--domain docs] [--no-open]        发起授权（自动开浏览器）
+ *   larklink bindings auth <profile> --complete [--device-code CODE]    收尾（码取自暂存）
  *   larklink bindings list [--fast] | health
  *   larklink bindings remove <profile> [--purge|--keep-profile] --yes
  *   larklink bindings pin add <token> <profile> | remove <token> | list
@@ -44,7 +45,8 @@ function usage(): void {
 
   larklink bindings adopt [--profile <名>]…        导入既有 lark-cli profile（Q8）
   larklink bindings add --name N --brand B --app-id ID --app-secret-stdin
-  larklink bindings auth <profile> [--domain docs] [--device-code CODE]
+  larklink bindings auth <profile> [--domain docs] [--no-open]        发起授权（自动开浏览器）
+  larklink bindings auth <profile> --complete [--device-code CODE]    收尾（码取自暂存）
   larklink bindings list [--fast] / health
   larklink bindings remove <profile> [--purge|--keep-profile] --yes
   larklink bindings pin add|remove|list
@@ -131,13 +133,15 @@ async function main(): Promise<number> {
       const { flags, rest } = parseFlags(tokens, new Set(["domain", "device-code"]));
       const profile = rest[0];
       if (!profile) {
-        console.log(JSON.stringify({ ok: false, code: "usage", message: "larklink bindings auth <profile> [--domain docs] [--device-code CODE]" }));
+        console.log(JSON.stringify({ ok: false, code: "usage", message: "larklink bindings auth <profile> [--domain docs] [--device-code CODE] [--complete] [--no-open]" }));
         return 2;
       }
       return cmdAuth(ctx, {
         profile,
         domain: typeof flags["domain"] === "string" ? flags["domain"] : undefined,
         deviceCode: typeof flags["device-code"] === "string" ? flags["device-code"] : undefined,
+        complete: flags["complete"] === true,
+        open: flags["no-open"] !== true,
       });
     }
     if (sub === "list" || sub === "health") {

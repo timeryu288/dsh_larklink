@@ -142,7 +142,7 @@ export function resolve(registry: Parameters<typeof findBinding>[0], input: stri
     const scope = parsed.brand === "none" ? "全部绑定" : `${parsed.brand} 品牌绑定`;
     throw new ResolveError(
       "no-routable-binding",
-      `无可路由绑定（${scope} 中没有可用绑定；incomplete 不可路由）。请先 bindings add / adopt 或完成授权。`,
+      `无可路由绑定（${scope} 中没有可用绑定；incomplete 不可路由）。若本机已有 lark-cli profile，先 larklink_bindings(action=adopt) 导入为绑定；全新机器需先在终端 larklink bindings add（app secret 不经模型）。`,
       parsed,
     );
   }

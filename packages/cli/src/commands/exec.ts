@@ -63,9 +63,16 @@ export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = lark
       confidence = result.confidence;
       routedToken = result.parsed.token;
       if (result.bindingStatus !== "ready") {
-        // Q1：不换绑定，提示修复
+        // Q1：不换绑定；自动触发登录修复（auth-start 会开浏览器+出二维码，用户确认后 auth-complete 再重试）
         await appendAudit({ kind: "exec", profile, outcome: "blocked-auth", confidence, domain, as }, home);
-        emit({ ok: false, code: "binding-needs-repair", profile, bindingStatus: result.bindingStatus, message: `绑定 ${profile} 状态 ${result.bindingStatus}，请 larklink bindings auth ${profile} 修复后重试（不自动换绑定，Q1）` }, null, 2);
+        emit({
+          ok: false,
+          code: "binding-needs-repair",
+          profile,
+          bindingStatus: result.bindingStatus,
+          message: `绑定 ${profile} 状态 ${result.bindingStatus}，需修复授权（不自动换绑定，Q1）`,
+          fix: `立即调用 larklink_bindings(action=auth-start, profile=${profile}) 发起登录：自动打开浏览器并生成二维码；用户确认后 auth-complete，然后重试本命令`,
+        }, null, 2);
         return 2;
       }
     } catch (e) {

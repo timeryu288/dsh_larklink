@@ -17,6 +17,8 @@ export interface LarkRunResult {
 export interface LarkRunnerOptions {
   timeoutMs?: number;
   stdin?: string;
+  /** 子进程工作目录（auth qrcode 的 --output 只接受 cwd 内相对路径，用 cwd 定位输出）。 */
+  cwd?: string;
 }
 
 export type LarkRunner = (args: string[], opts?: LarkRunnerOptions) => Promise<LarkRunResult>;
@@ -57,7 +59,7 @@ export const defaultLarkRunner: LarkRunner = (args, opts = {}) => {
   const timeoutMs = opts.timeoutMs ?? 120_000;
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const child = spawn(bin, args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(bin, args, { shell: false, windowsHide: true, cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

@@ -1,9 +1,9 @@
 /**
  * genui 面板后端路由（webServer 契约照 browser-skill 先例：exact 路径 + 原生 req/res）。
- * 只暴露无敏感操作（列表/adopt/health）；add/auth/remove 仍只走终端（密钥不经面板与模型）。
+ * 列表/adopt/health/auth-start/auth-complete（split-flow 全程无密钥）；add/remove 仍只走终端（app secret 不经面板与模型）。
  */
 import type { LarkRunnerLike } from "./tools.js";
-import { cmdAdopt, cmdList, type Emit } from "@timeryu288/larklink-cli/commands/bindings";
+import { cmdAdopt, cmdAuth, cmdList, type Emit } from "@timeryu288/larklink-cli/commands/bindings";
 
 interface WebServerRoute {
   kind: "exact";
@@ -70,6 +70,15 @@ function captureEmit(): { emit: Emit; payload: () => unknown } {
   return { emit, payload: () => value };
 }
 
+function safeParseBody(text: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
 export function registerLarklinkRoutes(deps: {
   ctx: { inject(services: string[], fn: (injected: { get(name: string): unknown }) => () => void): void };
   runner: LarkRunnerLike;
@@ -126,6 +135,21 @@ export function registerLarklinkRoutes(deps: {
       await cmdList({ runner, home }, { health: true }, cap.emit);
       sendJson(res, 200, cap.payload());
     });
+
+    // auth-start / auth-complete：split-flow 授权（无密钥经手；浏览器自动打开）
+    const authRoute = (complete: boolean) => async (req: HttpRequest, res: HttpResponse): Promise<void> => {
+      const body = safeParseBody(await readBody(req).catch(() => ""));
+      const profile = typeof body["profile"] === "string" ? body["profile"] : undefined;
+      if (profile === undefined || profile === "") {
+        sendJson(res, 400, { ok: false, error: "需要 JSON body { profile }" });
+        return;
+      }
+      const cap = captureEmit();
+      await cmdAuth({ runner, home }, { profile, complete, open: !complete }, cap.emit);
+      sendJson(res, 200, cap.payload());
+    };
+    route("POST", `${ROUTE_BASE}/auth-start`, authRoute(false));
+    route("POST", `${ROUTE_BASE}/auth-complete`, authRoute(true));
 
     return () => {
       for (const d of [...disposers].reverse()) d();

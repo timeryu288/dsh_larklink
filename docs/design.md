@@ -133,12 +133,13 @@
 | add | `larklink bindings add --name <profile> [--brand feishu\|lark] [--app-id <id>]`：<br>① 无 app-id → 调 `lark-cli config init --name <名> --brand <b> --new`（后台运行）提取 `verification_url`；<br>② 生成二维码（PNG 优先）连同 URL 一起给用户；<br>③ 用户完成后 `auth login --device-code <code>` 收尾；<br>④ `auth status --json --verify` 回填 userName/openId/status 到 registry |
 | adopt（Q8 决议） | 扫描 `lark-cli profile list`，把用户已有 profile 注册为**导入绑定**（回填元数据，不改动原 profile 任何东西）；首次运行列出可导入项由用户勾选 |
 | auth（补授权/恢复） | 沿用 lark-cli split-flow：`auth login --domain <域> --no-wait --json` → 二维码 → 用户确认后 `--device-code` 收尾；scope 累积。**中断恢复（Q8 决议）**：`incomplete` 绑定允许存在于 registry 但不可被路由选中；恢复 = 重新发起**全新** split-flow（禁止缓存旧 verification_url/device_code） |
+| auth（**v0.2.1 修订**） | Q8 原案把 auth 限定在终端，实测推翻：`auth login --no-wait` 全程**无密钥经手**（app secret 留在 lark-cli profile 内），且 lark-cli 官方 agent 契约本就要求 agent 展示 URL/二维码并自行 `--device-code` 收尾。现 auth-start/auth-complete 经 `larklink_bindings` 工具暴露：auth-start 自动开浏览器 + 生成二维码 + 把 device_code 暂存于 `~/.larklink/pending-auth.json`（10 分钟过期、一次性、收尾即清——不违反"禁止缓存旧授权码复用"）；auth-complete 免携带收尾并同步状态。仅 add（app secret 走 stdin）与 remove（破坏性）仍限终端 |
 | list | 读 registry + 逐条 `auth status --json --verify` 核实（`--fast` 时跳过网络校验） |
 | health | 同步 status；`refreshExpiresAt` 临期（<48h）时提示重新授权；token 过期由 lark-cli 下次调用自动刷新，插件不做刷新逻辑 |
 | remove（Q8 决议） | **导入绑定默认只解除注册**（lark-cli profile 原样保留），`--purge` 显式要求才删 profile；插件自建绑定默认删 profile（`--keep-profile` 保留）。删除前列出将受影响的 pins 与审计引用；需用户显式确认（破坏性） |
 | pin | 手动增删 pins（自动学习之外的兜底） |
 
-Agent 交互协议：add/auth 必须走 split-flow（当轮只给 URL + 二维码，结束本轮等用户回复"已授权"），**禁止缓存 verification_url / device_code**。
+Agent 交互协议：add 必须走 split-flow（当轮只给 URL + 二维码，结束本轮等用户回复"已授权"）。auth 由 Agent 经工具自动触发（v0.2.1 修订，见上表）；一次性 pending 暂存仅用于当次流程收尾，**禁止跨流程缓存 verification_url / device_code**。
 
 ## 7. 执行层（exec）
 

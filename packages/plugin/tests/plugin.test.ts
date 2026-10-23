@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRegistry, upsertBinding } from "@timeryu288/larklink-core";
@@ -34,6 +34,7 @@ function okResult(stdout = '{"ok":true}'): LarkRunResult {
 interface RegisteredTool {
   name: string;
   execute(args: Record<string, unknown>): Promise<unknown>;
+  output?: { render(args: Record<string, unknown>, value: unknown): unknown };
 }
 
 function fakeCtx() {
@@ -101,12 +102,13 @@ interface FakeRes {
   end(body?: string): void;
 }
 
-function fakeReq(method: string, path: string, headers: Record<string, string> = {}): FakeReq {
+function fakeReq(method: string, path: string, headers: Record<string, string> = {}, body = ""): FakeReq {
   return {
     method,
     url: path,
     headers,
     on(event, cb) {
+      if (event === "data" && body !== "") setTimeout(() => cb(Buffer.from(body)), 0);
       if (event === "end") setTimeout(() => cb(), 0);
     },
   };
@@ -159,6 +161,12 @@ describe("插件：注册与契约", () => {
     expect(s?.name).toBe("larklink");
     expect(s?.content).toBe(LARKLINK_SKILL_MARKDOWN);
     expect(LARKLINK_SKILL_MARKDOWN).toContain("硬纪律");
+    // host 契约：render 必须返回内容块数组（[{type:"text",text}]），否则 result.content.some 崩溃
+    const t = tools.find((x) => x.name === "larklink_bindings")!;
+    const rendered = t.output!.render({}, { ok: true, bindings: [] });
+    expect(Array.isArray(rendered)).toBe(true);
+    expect((rendered as Array<{ type: string; text: string }>)[0]!.type).toBe("text");
+    expect(JSON.parse((rendered as Array<{ text: string }>)[0]!.text)).toMatchObject({ ok: true });
     cleanup();
     expect(tools).toHaveLength(0);
     expect(skill()).toBeNull();
@@ -180,7 +188,13 @@ describe("插件：genui 后端路由", () => {
         ));
       },
     });
-    expect(routes.map((r) => r.path).sort()).toEqual(["/larklink/adopt", "/larklink/bindings", "/larklink/health"]);
+    expect(routes.map((r) => r.path).sort()).toEqual([
+      "/larklink/adopt",
+      "/larklink/auth-complete",
+      "/larklink/auth-start",
+      "/larklink/bindings",
+      "/larklink/health",
+    ]);
 
     const get = routes.find((r) => r.path === "/larklink/bindings")!;
     const res1 = fakeRes();
@@ -266,5 +280,106 @@ describe("插件：工具执行（emit 缝 + 守卫链）", () => {
     const out = (await bindingsTool.execute({ action: "list", fast: true })) as Record<string, unknown>;
     expect(out["ok"]).toBe(true);
     expect((out["bindings"] as Array<{ profile: string }>)[0]!.profile).toBe("solo");
+  });
+});
+
+const DEVICE_FLOW = JSON.stringify({
+  device_code: "dev_1",
+  expires_in: 600,
+  verification_url: "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=x&user_code=CDXQ-LHM2",
+});
+
+describe("插件：自动登录（auth-start / auth-complete）", () => {
+  /** 按调用顺序回放结果的 runner。 */
+  function seqRunner(results: LarkRunResult[]) {
+    const calls: string[][] = [];
+    return {
+      calls,
+      runner: (args: string[]): Promise<LarkRunResult> => {
+        calls.push(args);
+        return Promise.resolve(results.shift() ?? okResult());
+      },
+    };
+  }
+
+  it("larklink_bindings auth-start → auth-started 信封（URL + 暂存 device flow）", async () => {
+    await seedSolo();
+    const { runner, calls } = seqRunner([okResult(DEVICE_FLOW), okResult()]);
+    const { ctx, tools } = fakeCtx();
+    applyTo(ctx, { home }, { runner: runner as never });
+    const bindingsTool = tools.find((t) => t.name === "larklink_bindings")!;
+    const out = (await bindingsTool.execute({ action: "auth-start", profile: "solo", open: false })) as Record<string, unknown>;
+    expect(out["ok"]).toBe(true);
+    expect(out["status"]).toBe("auth-started");
+    expect(out["verificationUrl"]).toContain("accounts.feishu.cn");
+    expect(calls[0]).toEqual(["--profile", "solo", "auth", "login", "--domain", "docs", "--no-wait", "--json"]);
+    const pending = JSON.parse(await readFile(join(home, "pending-auth.json"), "utf8")) as { deviceCode: string };
+    expect(pending.deviceCode).toBe("dev_1");
+  });
+
+  it("larklink_bindings auth-complete → ready 并清暂存", async () => {
+    await seedSolo();
+    await writeFile(join(home, "pending-auth.json"), JSON.stringify({
+      profile: "solo", deviceCode: "dev_1", verificationUrl: "https://x",
+      startedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    }), "utf8");
+    const { runner, calls } = seqRunner([
+      okResult(),
+      okResult(JSON.stringify({ identities: { user: { userName: "于跃", openId: "ou_1", tokenStatus: "valid" } } })),
+    ]);
+    const { ctx, tools } = fakeCtx();
+    applyTo(ctx, { home }, { runner: runner as never });
+    const bindingsTool = tools.find((t) => t.name === "larklink_bindings")!;
+    const out = (await bindingsTool.execute({ action: "auth-complete", profile: "solo" })) as Record<string, unknown>;
+    expect(out["ok"]).toBe(true);
+    expect(out["status"]).toBe("ready");
+    expect(calls[0]).toEqual(["--profile", "solo", "auth", "login", "--device-code", "dev_1", "--json"]);
+    await expect(readFile(join(home, "pending-auth.json"))).rejects.toThrow();
+  });
+
+  it("auth 动作缺 profile → 抛错；未知 action 被工具层 enum 校验拦截", async () => {
+    await seedSolo();
+    const { ctx, tools } = fakeCtx();
+    applyTo(ctx, { home }, { runner: () => Promise.resolve(okResult()) });
+    const bindingsTool = tools.find((t) => t.name === "larklink_bindings")!;
+    await expect(bindingsTool.execute({ action: "auth-start" })).rejects.toThrow(/profile/);
+    await expect(bindingsTool.execute({ action: "bogus" })).rejects.toThrow(/must be one of/);
+  });
+
+  it("genui POST /larklink/auth-start：body 带 profile → auth-started；缺 profile → 400", async () => {
+    await seedSolo();
+    const { runner } = seqRunner([okResult(DEVICE_FLOW), okResult()]);
+    const { ctx, routes } = fakeCtx();
+    applyTo(ctx, { home }, { runner: runner as never });
+    const start = routes.find((r) => r.path === "/larklink/auth-start")!;
+
+    const res1 = fakeRes();
+    start.handler(fakeReq("POST", "/larklink/auth-start", { host: "x", origin: "http://x", "content-type": "application/json" }, JSON.stringify({ profile: "solo" })), res1);
+    await waitFor(res1);
+    expect(res1.status).toBe(200);
+    const payload = JSON.parse(res1.body) as { status: string; verificationUrl: string };
+    expect(payload.status).toBe("auth-started");
+    expect(payload.verificationUrl).toContain("accounts.feishu.cn");
+
+    const res2 = fakeRes();
+    start.handler(fakeReq("POST", "/larklink/auth-start", { host: "x", origin: "http://x" }, ""), res2);
+    await waitFor(res2);
+    expect(res2.status).toBe(400);
+  });
+});
+
+describe("插件：SKILL 触发条件（回归：单绑定也必须触发）", () => {
+  it("描述不以多绑定为前提，且包含登录修复触发语", async () => {
+    const { LARKLINK_SKILL_DESCRIPTION } = await import("../src/skill-content.js");
+    expect(LARKLINK_SKILL_DESCRIPTION).not.toContain("more than one");
+    expect(LARKLINK_SKILL_DESCRIPTION.toLowerCase()).toContain("proactively");
+    expect(LARKLINK_SKILL_DESCRIPTION.toLowerCase()).toContain("auth");
+  });
+
+  it("正文包含无条件触发、登录修复流程与 adopt 自举", () => {
+    expect(LARKLINK_SKILL_MARKDOWN).toContain("单一绑定也要走 larklink");
+    expect(LARKLINK_SKILL_MARKDOWN).toContain("auth-start");
+    expect(LARKLINK_SKILL_MARKDOWN).toContain("pending-auth-expired");
+    expect(LARKLINK_SKILL_MARKDOWN).toContain("action=adopt");
   });
 });

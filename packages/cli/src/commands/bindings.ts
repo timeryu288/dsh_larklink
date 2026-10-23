@@ -2,6 +2,9 @@
  * bindings 生命周期命令（design.md §6，决议 Q8/Q10）。
  * 所有 lark-cli 调用经注入的 runner，便于测试 mock。
  */
+import { spawn } from "node:child_process";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   findBinding,
   findPin,
@@ -121,30 +124,118 @@ export async function cmdAdd(
   return 0;
 }
 
+/** 进行中 split-flow 的暂存（收尾用；auth-start 每次整体覆盖，过期即作废——Q8-②：绝不缓存旧授权码跨流程复用）。 */
+export interface PendingAuthFlow {
+  profile: string;
+  deviceCode: string;
+  verificationUrl: string;
+  startedAt: string;
+  /** ISO 时间；超过即过期，必须重新 auth-start。 */
+  expiresAt: string;
+}
+
+function pendingAuthPath(home: string): string {
+  return join(home, "pending-auth.json");
+}
+
+async function readPendingAuth(home: string): Promise<PendingAuthFlow | null> {
+  try {
+    const text = await readFile(pendingAuthPath(home), "utf8");
+    const parsed = safeJson(text) as PendingAuthFlow | null;
+    if (parsed === null || typeof parsed !== "object" || !parsed.profile || !parsed.deviceCode) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function writePendingAuth(home: string, flow: PendingAuthFlow): Promise<void> {
+  await mkdir(home, { recursive: true });
+  await writeFile(pendingAuthPath(home), JSON.stringify(flow, null, 2) + "\n", "utf8");
+}
+
+async function clearPendingAuth(home: string): Promise<void> {
+  await rm(pendingAuthPath(home), { force: true });
+}
+
+/** 尽力打开系统浏览器（DSH 宿主运行在用户本机；失败不阻塞，envelope 里报告）。 */
+export function openInBrowser(url: string): boolean {
+  try {
+    const cmd = process.platform === "win32" ? "rundll32" : process.platform === "darwin" ? "open" : "xdg-open";
+    const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
+    const child = spawn(cmd, args, { shell: false, stdio: "ignore", detached: true });
+    child.on("error", () => {});
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface AuthOptions {
+  profile: string;
+  domain?: string;
+  /** 显式设备码收尾（CLI 直用；不传则读暂存的进行中流程）。 */
+  deviceCode?: string;
+  /** true = 收尾步骤（工具/CLI 在用户完成浏览器授权后调用）。 */
+  complete?: boolean;
+  /** false = 不自动打开浏览器（默认打开）。 */
+  open?: boolean;
+}
+
 /**
- * auth：split-flow 授权/恢复（Q8-②：中断后每次都发起新流程，绝不缓存授权码）。
- * 无 --device-code：发起（--no-wait 打印 verification_url，可选二维码）；
- * 有 --device-code：收尾。
+ * auth：split-flow 授权/恢复（Q8-②：中断后每次都发起新流程，绝不缓存授权码复用）。
+ * 全程无密钥经手——app secret 留在 lark-cli profile 里，lark-cli 官方 agent 契约本身就要求
+ * agent 展示 verification_url/二维码并自行执行 --device-code 收尾。
+ * - 发起：`auth login --domain <域> --no-wait --json` → verification_url + device_code + 二维码 →（默认）自动开浏览器 → 暂存待收尾
+ * - 收尾：`auth login --device-code <code>`（码取自参数或暂存）→ 同步绑定状态
  */
 export async function cmdAuth(
   ctx: BindingsCtx,
-  opts: { profile: string; domain?: string; deviceCode?: string },
+  opts: AuthOptions,
   emit: Emit = stdEmit,
 ): Promise<number> {
   const home = ctx.home ?? larklinkHome();
-  if (opts.deviceCode !== undefined) {
+
+  // ---- 收尾步骤 ----
+  if (opts.complete === true || opts.deviceCode !== undefined) {
+    let deviceCode = opts.deviceCode;
+    let fromStash = false;
+    if (deviceCode === undefined) {
+      const pending = await readPendingAuth(home);
+      if (pending === null) {
+        emit({ ok: false, code: "no-pending-auth", message: `没有进行中的授权流程（${pendingAuthPath(home)} 不存在）。先执行 auth-start 发起新流程。` });
+        return 2;
+      }
+      if (pending.profile !== opts.profile) {
+        emit({ ok: false, code: "pending-auth-mismatch", message: `进行中的授权流程属于绑定 ${pending.profile}，与请求的 ${opts.profile} 不符。请先对 ${pending.profile} 收尾或重新发起。` });
+        return 2;
+      }
+      if (Date.parse(pending.expiresAt) <= Date.now()) {
+        await clearPendingAuth(home);
+        emit({ ok: false, code: "pending-auth-expired", message: `授权流程已过期（发起于 ${pending.startedAt}）。请重新 auth-start 发起全新流程（Q8-②：不缓存旧授权码）。` });
+        return 2;
+      }
+      deviceCode = pending.deviceCode;
+      fromStash = true;
+    }
     const res = await ctx.runner(
-      ["--profile", opts.profile, "auth", "login", "--device-code", opts.deviceCode, "--json"],
-      { timeoutMs: 30_000 },
+      ["--profile", opts.profile, "auth", "login", "--device-code", deviceCode, "--json"],
+      { timeoutMs: 60_000 },
     );
     if (res.exitCode !== 0) {
-      emit({ ok: false, code: "lark-cli-error", exitCode: res.exitCode, error: safeJson(res.stderr) ?? res.stderr.slice(0, 400) });
+      // 收尾失败不清暂存：用户可能还没在浏览器里确认，允许再次收尾重试轮询
+      emit({ ok: false, code: "lark-cli-error", exitCode: res.exitCode, error: safeJson(res.stderr) ?? res.stderr.slice(0, 400), hint: "若用户尚未在浏览器完成授权，请等用户确认后重新 auth-complete（轮询重试）" });
       return 1;
     }
+    if (fromStash) await clearPendingAuth(home);
     const health = await syncBindingStatus(ctx, home, opts.profile);
-    emit({ ok: true, profile: opts.profile, ...health }, null, 2);
+    await appendAudit({ kind: "bindings", profile: opts.profile, message: `auth complete（status=${health.status ?? "?"}）` }, home);
+    emit({ ok: true, profile: opts.profile, status: health.status, userName: health.userName, warning: health.warning, next: health.status === "ready" ? "授权恢复，可继续原操作" : `状态仍为 ${health.status}，可能需要检查应用配置后重新授权` }, null, 2);
     return 0;
   }
+
+  // ---- 发起步骤 ----
   const domain = opts.domain ?? "docs";
   const res = await ctx.runner(
     ["--profile", opts.profile, "auth", "login", "--domain", domain, "--no-wait", "--json"],
@@ -157,21 +248,50 @@ export async function cmdAuth(
     return 1;
   }
   const url = (payload["verification_url"] ?? payload["url"]) as string | undefined;
+  const deviceCode = (payload["device_code"] ?? payload["deviceCode"]) as string | undefined;
   if (!url) {
     emit({ ok: false, code: "no-verification-url", message: "lark-cli 未返回 verification_url", payload });
     return 1;
   }
-  // 二维码（尽力而为，失败不阻塞）
+  const expiresInSec = typeof payload["expires_in"] === "number" ? (payload["expires_in"] as number) : 600;
+
+  // 二维码（尽力而为，失败不阻塞）。lark-cli 的 --output 只接受 cwd 内相对路径 → 用 cwd=home + 相对名。
   let qrcode: string | undefined;
   try {
-    const { mkdir } = await import("node:fs/promises");
-    const { join } = await import("node:path");
     await mkdir(home, { recursive: true });
-    const png = join(home, `qrcode-${opts.profile}.png`);
-    const qr = await ctx.runner(["auth", "qrcode", url, "--output", png], { timeoutMs: 15_000 });
-    if (qr.exitCode === 0) qrcode = png;
+    const qrName = `qrcode-${opts.profile}.png`;
+    const qr = await ctx.runner(["auth", "qrcode", url, "--output", qrName], { timeoutMs: 15_000, cwd: home });
+    if (qr.exitCode === 0) qrcode = join(home, qrName);
   } catch { /* 忽略 */ }
-  emit({ ok: true, profile: opts.profile, verificationUrl: url, qrcode, next: `用户完成授权后执行：larklink bindings auth ${opts.profile} --device-code <code>` }, null, 2);
+
+  // 暂存进行中流程（auth-complete 免携带 device_code）
+  const flow: PendingAuthFlow = {
+    profile: opts.profile,
+    deviceCode: deviceCode ?? "",
+    verificationUrl: url,
+    startedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + expiresInSec * 1000).toISOString(),
+  };
+  if (deviceCode !== undefined) await writePendingAuth(home, flow);
+
+  // 自动打开浏览器（默认；尽力而为）
+  const browserOpened = opts.open !== false ? openInBrowser(url) : false;
+
+  await appendAudit({ kind: "bindings", profile: opts.profile, message: `auth start（domain=${domain}，expiresIn=${expiresInSec}s）` }, home);
+  emit({
+    ok: true,
+    profile: opts.profile,
+    status: "auth-started",
+    verificationUrl: url,
+    qrcode,
+    expiresInSeconds: expiresInSec,
+    browserOpened,
+    next: [
+      "1. 让用户在浏览器（已自动打开；未打开则手动访问 verificationUrl 或扫码二维码）完成授权确认",
+      "2. 用户确认后调用 auth-complete（device_code 已暂存，无需携带）",
+      "3. 授权 URL 10 分钟内有效，过期须重新 auth-start（Q8-②）",
+    ].join("\n"),
+  }, null, 2);
   return 0;
 }
 
@@ -197,7 +317,7 @@ async function syncBindingStatus(
   ctx: BindingsCtx,
   home: string,
   profile: string,
-): Promise<{ status?: BindingStatus; userName?: string; openId?: string; warning?: string }> {
+): Promise<{ status?: BindingStatus; userName?: string; openId?: string; refreshExpiresAt?: string; warning?: string }> {
   const res = await ctx.runner(["--profile", profile, "auth", "status", "--json", "--verify"], { timeoutMs: 20_000 });
   const payload = safeJson(res.stdout) as AuthStatusPayload | null;
   const user = payload?.identities?.user;
@@ -207,9 +327,10 @@ async function syncBindingStatus(
     return { status: "incomplete", warning: `绑定 ${profile} 无 user 身份（bot-only）→ incomplete，不可路由` };
   }
   const status = mapStatus(user.tokenStatus ?? user.status, true);
+  const refreshExpiresAt = user.refreshExpiresAt;
   let warning: string | undefined;
-  if (user.refreshExpiresAt !== undefined) {
-    const expiry = Date.parse(user.refreshExpiresAt);
+  if (refreshExpiresAt !== undefined) {
+    const expiry = Date.parse(refreshExpiresAt);
     if (!Number.isNaN(expiry)) {
       const hoursLeft = (expiry - Date.now()) / 3_600_000;
       if (hoursLeft < 0) warning = `绑定 ${profile} refresh token 已过期，需重新授权`;
@@ -227,7 +348,7 @@ async function syncBindingStatus(
     });
     await saveRegistry(registry, home);
   }
-  return { status, userName: user.userName, openId: user.openId, warning };
+  return { status, userName: user.userName, openId: user.openId, refreshExpiresAt, warning };
 }
 
 async function setBindingStatus(home: string, profile: string, status: BindingStatus): Promise<boolean> {
@@ -244,13 +365,18 @@ export async function cmdList(ctx: BindingsCtx, opts: { fast?: boolean; health?:
   const home = ctx.home ?? larklinkHome();
   let registry = await loadRegistry(home);
   const warnings: string[] = [];
+  /** 实时核验结果（openId / refreshExpiresAt 不落 registry，仅随本次信封透出）。 */
+  const liveInfo = new Map<string, { openId?: string; refreshExpiresAt?: string }>();
   if (!opts.fast) {
     for (const b of registry.bindings) {
       try {
         const s = await syncBindingStatus(ctx, home, b.profile);
         if (s.warning) warnings.push(s.warning);
+        if (s.openId !== undefined || s.refreshExpiresAt !== undefined) {
+          liveInfo.set(b.profile, { openId: s.openId, refreshExpiresAt: s.refreshExpiresAt });
+        }
         if (opts.health && s.status && s.status !== "ready" && s.status !== "incomplete") {
-          warnings.push(`绑定 ${b.profile} 状态 ${s.status}：请 larklink bindings auth ${b.profile} 修复`);
+          warnings.push(`绑定 ${b.profile} 状态 ${s.status}：调用 larklink_bindings(action=auth-start, profile=${b.profile}) 发起登录修复`);
         }
       } catch (e) {
         warnings.push(`绑定 ${b.profile} 状态同步失败：${(e as Error).message}`);
@@ -269,7 +395,16 @@ export async function cmdList(ctx: BindingsCtx, opts: { fast?: boolean; health?:
   }
   emit({
     ok: true,
-    bindings: registry.bindings.map((b) => ({ profile: b.profile, brand: b.brand, appId: b.appId, userName: b.userName, status: b.status, adopted: b.adopted ?? false })),
+    bindings: registry.bindings.map((b) => ({
+      profile: b.profile,
+      brand: b.brand,
+      appId: b.appId,
+      userName: b.userName,
+      openId: liveInfo.get(b.profile)?.openId ?? b.openId,
+      refreshExpiresAt: liveInfo.get(b.profile)?.refreshExpiresAt,
+      status: b.status,
+      adopted: b.adopted ?? false,
+    })),
     pins: registry.pins,
     warnings,
   }, null, 2);

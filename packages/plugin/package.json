@@ -1,6 +1,6 @@
 {
   "name": "@timeryu/dsh-larklink",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "DeepSeek Harness plugin: multi-account lark-cli routing with guarded document exec (larklink_resolve / larklink_exec / larklink_bindings).",
   "type": "module",
   "license": "MIT",
@@ -52,12 +52,12 @@
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@types/node": "^24.0.0",
     "@types/react": "^18.3.0",

@@ -4,6 +4,7 @@ interface LarkRunnerLike {
   (args: string[], opts?: {
     timeoutMs?: number;
     stdin?: string;
+    cwd?: string;
   }): Promise<{
     exitCode: number;
     stdout: string;

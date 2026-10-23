@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createRegistry, upsertBinding, upsertPin } from "@timeryu288/larklink-core";
 import { cmdResolve, classifyProbe } from "../src/commands/resolve.js";
 import { cmdExec } from "../src/commands/exec.js";
-import { cmdAdopt, cmdList, cmdPin, mapStatus } from "../src/commands/bindings.js";
+import { cmdAdopt, cmdAuth, cmdList, cmdPin, mapStatus } from "../src/commands/bindings.js";
 import type { LarkRunResult } from "../src/larkcli.js";
 import { appendAudit, auditPath } from "../src/audit.js";
 import { loadRegistry, saveRegistry } from "../src/store.js";
@@ -237,15 +237,20 @@ describe("bindings：adopt / pin / 状态映射", () => {
 });
 
 describe("bindings：health 状态同步（真实 auth status 结构）", () => {
-  it("identities.user.tokenStatus=valid → ready，同步 userName/openId", async () => {
+  it("identities.user.tokenStatus=valid → ready，同步 userName/openId，透出 refreshExpiresAt", async () => {
     await seedTwoFeishu();
+    const expiry = new Date(Date.now() + 7 * 86400e3).toISOString();
     const { runner } = recorder([
-      okResult(JSON.stringify({ appId: "cli_1", brand: "feishu", identities: { user: { status: "ready", available: true, userName: "张三", openId: "ou_9", tokenStatus: "valid", refreshExpiresAt: new Date(Date.now() + 7 * 86400e3).toISOString() } } })),
+      okResult(JSON.stringify({ appId: "cli_1", brand: "feishu", identities: { user: { status: "ready", available: true, userName: "张三", openId: "ou_9", tokenStatus: "valid", refreshExpiresAt: expiry } } })),
       okResult(JSON.stringify({ appId: "cli_2", brand: "feishu", identities: { user: { status: "ready", userName: "李四", tokenStatus: "valid" } } })),
     ]);
-    expect(await cmdList({ runner, home }, { health: true })).toBe(0);
+    let envelope: Record<string, unknown> = {};
+    expect(await cmdList({ runner, home }, { health: true }, (p) => { envelope = p as Record<string, unknown>; })).toBe(0);
     const reg = await loadRegistry(home);
     expect(reg.bindings.find((b) => b.profile === "work-feishu")).toMatchObject({ status: "ready", userName: "张三", openId: "ou_9" });
+    const list = envelope["bindings"] as Array<{ profile: string; openId?: string; refreshExpiresAt?: string }>;
+    expect(list.find((b) => b.profile === "work-feishu")).toMatchObject({ openId: "ou_9", refreshExpiresAt: expiry });
+    expect(list.find((b) => b.profile === "personal-feishu")!.refreshExpiresAt).toBeUndefined();
   });
 
   it("无 user 身份（bot-only）→ incomplete；refreshExpiresAt <48h 出警告", async () => {
@@ -290,5 +295,93 @@ describe("audit：开关", () => {
     const text = await readFile(auditPath(home), "utf8");
     expect(text).toContain('"y"');
     expect(text).not.toContain('"x"');
+  });
+});
+
+const DEVICE_FLOW_JSON = JSON.stringify({
+  device_code: "dev_code_1",
+  expires_in: 600,
+  verification_url: "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=x&user_code=ABCD-EFGH",
+});
+
+describe("bindings：auth split-flow（自动登录）", () => {
+  it("auth-start：返回 verificationUrl、暂存 device flow、写审计（不开浏览器）", async () => {
+    let reg = createRegistry();
+    reg = upsertBinding(reg, { profile: "work-feishu", brand: "feishu", appId: "cli_1", status: "needs_refresh" });
+    await saveRegistry(reg, home);
+    const { runner, calls } = recorder([okResult(DEVICE_FLOW_JSON), okResult()]);
+    let envelope: Record<string, unknown> = {};
+    const exit = await cmdAuth({ runner, home }, { profile: "work-feishu", open: false }, (p) => { envelope = p as Record<string, unknown>; });
+    expect(exit).toBe(0);
+    expect(envelope["status"]).toBe("auth-started");
+    expect(envelope["verificationUrl"]).toContain("accounts.feishu.cn");
+    expect(calls[0]).toEqual(["--profile", "work-feishu", "auth", "login", "--domain", "docs", "--no-wait", "--json"]);
+    const pending = JSON.parse(await readFile(join(home, "pending-auth.json"), "utf8")) as { profile: string; deviceCode: string };
+    expect(pending).toMatchObject({ profile: "work-feishu", deviceCode: "dev_code_1" });
+    expect((await readFile(auditPath(home), "utf8"))).toContain("auth start");
+  });
+
+  it("auth-complete：读暂存码收尾、同步 ready、清暂存", async () => {
+    await writeFile(join(home, "pending-auth.json"), JSON.stringify({
+      profile: "work-feishu", deviceCode: "dev_code_2", verificationUrl: "https://x",
+      startedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    }), "utf8");
+    let reg = createRegistry();
+    reg = upsertBinding(reg, { profile: "work-feishu", brand: "feishu", appId: "cli_1", status: "unauthorized" });
+    await saveRegistry(reg, home);
+    const { runner, calls } = recorder([
+      okResult(), // auth login --device-code
+      okResult(JSON.stringify({ identities: { user: { userName: "张三", openId: "ou_1", tokenStatus: "valid" } } })), // auth status --verify
+    ]);
+    let envelope: Record<string, unknown> = {};
+    const exit = await cmdAuth({ runner, home }, { profile: "work-feishu", complete: true }, (p) => { envelope = p as Record<string, unknown>; });
+    expect(exit).toBe(0);
+    expect(calls[0]).toEqual(["--profile", "work-feishu", "auth", "login", "--device-code", "dev_code_2", "--json"]);
+    expect(envelope["status"]).toBe("ready");
+    expect((await loadRegistry(home)).bindings[0]!.status).toBe("ready");
+    await expect(readFile(join(home, "pending-auth.json"))).rejects.toThrow();
+  });
+
+  it("auth-complete：暂存过期 → pending-auth-expired 并清暂存（Q8-② 不复用旧码）", async () => {
+    await writeFile(join(home, "pending-auth.json"), JSON.stringify({
+      profile: "work-feishu", deviceCode: "old", verificationUrl: "https://x",
+      startedAt: new Date(Date.now() - 700_000).toISOString(), expiresAt: new Date(Date.now() - 100_000).toISOString(),
+    }), "utf8");
+    const { runner, calls } = recorder([]);
+    let envelope: Record<string, unknown> = {};
+    const exit = await cmdAuth({ runner, home }, { profile: "work-feishu", complete: true }, (p) => { envelope = p as Record<string, unknown>; });
+    expect(exit).toBe(2);
+    expect(envelope["code"]).toBe("pending-auth-expired");
+    expect(calls).toHaveLength(0);
+    await expect(readFile(join(home, "pending-auth.json"))).rejects.toThrow();
+  });
+
+  it("auth-complete：无暂存 → no-pending-auth；profile 不符 → mismatch", async () => {
+    const { runner } = recorder([]);
+    let e1: Record<string, unknown> = {};
+    await cmdAuth({ runner, home }, { profile: "a", complete: true }, (p) => { e1 = p as Record<string, unknown>; });
+    expect(e1["code"]).toBe("no-pending-auth");
+
+    await writeFile(join(home, "pending-auth.json"), JSON.stringify({
+      profile: "b", deviceCode: "c", verificationUrl: "https://x",
+      startedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    }), "utf8");
+    let e2: Record<string, unknown> = {};
+    await cmdAuth({ runner, home }, { profile: "a", complete: true }, (p) => { e2 = p as Record<string, unknown>; });
+    expect(e2["code"]).toBe("pending-auth-mismatch");
+  });
+
+  it("auth-complete：用户尚未确认（lark-cli 失败）→ 保留暂存允许重试", async () => {
+    await writeFile(join(home, "pending-auth.json"), JSON.stringify({
+      profile: "work-feishu", deviceCode: "dev_code_3", verificationUrl: "https://x",
+      startedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    }), "utf8");
+    const { runner } = recorder([{ exitCode: 1, stdout: "", stderr: "authorization_pending", durationMs: 3, timedOut: false }]);
+    let envelope: Record<string, unknown> = {};
+    const exit = await cmdAuth({ runner, home }, { profile: "work-feishu", complete: true }, (p) => { envelope = p as Record<string, unknown>; });
+    expect(exit).toBe(1);
+    expect(envelope["ok"]).toBe(false);
+    const pending = JSON.parse(await readFile(join(home, "pending-auth.json"), "utf8")) as { deviceCode: string };
+    expect(pending.deviceCode).toBe("dev_code_3");
   });
 });

@@ -20,7 +20,8 @@ Agent:  ├─ larklink_resolve(url)  → { profile: "work-feishu", ... }   # �
 ## 核心特性
 
 - **多账号并存**：飞书（国内）与 Lark（国际版）、多个租户、多个个人账号同时绑定，互不干扰——底层复用 `lark-cli` 原生 profile 隔离，token 不落插件。
-- **URL 自动路由**：按域名判品牌（`feishu.cn` / `larksuite.com` / `doubao.com`），按路径判资源类型（docx / wiki / sheets / base / slides…），歧义时展示候选让用户选一次并记住（pin）。
+- **URL 自动路由**：按域名判品牌（`feishu.cn` / `larksuite.com` / `doubao.com`），按路径判资源类型（docx / wiki / sheets / base / slides…），歧义时展示候选让用户选一次并记住（pin）。单绑定也统一走路由层（授权管理 + 守卫 + 审计）。
+- **未登录自动触发扫码登录**：任何操作发现授权失效/未登录，Agent 立即发起 split-flow（自动打开浏览器 + 二维码），用户确认后自动收尾重试，全程无终端操作。
 - **安全协议透传**：高风险写操作的 exit-10 确认门禁、`--dry-run` 预览、`ok == true` 成功判定全部沿用 lark-cli 契约，插件只做转发，不绕过任何门禁。
 - **可独立使用**：核心是 `larklink` CLI（路由 / 绑定管理 / 执行器），DSH 插件只是薄适配层。
 
@@ -49,7 +50,7 @@ DSH Agent ── larklink_* 工具 ── dsh-plugin（薄适配）
 - [x] **M1** core：解析器 + 注册表 + resolve（44 单测）
 - [x] **M2** CLI：绑定生命周期 + exec 守卫链（真机 adopt/health/resolve 冒烟通过）
 - [x] **M3** DSH 插件三工具 + 内嵌 SKILL（bundle 构建通过）
-- [x] **M3.5** genui 绑定管理面板：webServer 路由（`/larklink/bindings|adopt|health`，同源栅栏）+ sidebar「Lark 绑定」页签（状态灯/账号列表/adopt/health/pins；add/auth/remove 仍限终端）
+- [x] **M3.5** genui 绑定管理：webServer 路由（`/larklink/bindings|adopt|health|auth-start|auth-complete`，同源栅栏）+ sidebar「Lark 绑定」页签 + **设置页「LarkLink 账号管理」**（账户卡片：登录用户/openId/App ID/授权有效期/实时核验/扫码登录；add/remove 仍限终端）
 - [ ] **M4** npm 发布（待 npm login）、真机双账号端到端验收
 
 ## 快速上手（开发）
@@ -61,7 +62,7 @@ pnpm larklink --help # CLI
 pnpm build:plugin    # 构建 DSH 插件 bundle（packages/plugin/lib/index.mjs）
 ```
 
-绑定管理（终端，密钥不经模型）：`larklink bindings adopt`（导入既有 lark-cli profile）→ `add`（新应用，app secret 走 stdin）→ `auth`（扫码 split-flow）。
+绑定管理：新增应用走终端（`larklink bindings add`，app secret 走 stdin，不经模型）；**登录/授权修复全自动**——DSH Agent 遇到未登录/授权失效会自动调 `larklink_bindings(auth-start)` 发起扫码登录（自动打开浏览器 + 二维码），用户确认后 `auth-complete` 收尾，无需任何终端操作。
 
 ## 文档
 

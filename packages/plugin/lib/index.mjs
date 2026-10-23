@@ -46,6 +46,7 @@ const defaultLarkRunner = (args, opts = {}) => {
 		const child = spawn(bin, args, {
 			shell: false,
 			windowsHide: true,
+			cwd: opts.cwd,
 			stdio: [
 				"pipe",
 				"pipe",
@@ -326,7 +327,7 @@ function resolve(registry, input, opts = {}) {
 		};
 	}
 	const candidates = routableBindings(registry, parsed.brand);
-	if (candidates.length === 0) throw new ResolveError("no-routable-binding", `无可路由绑定（${parsed.brand === "none" ? "全部绑定" : `${parsed.brand} 品牌绑定`} 中没有可用绑定；incomplete 不可路由）。请先 bindings add / adopt 或完成授权。`, parsed);
+	if (candidates.length === 0) throw new ResolveError("no-routable-binding", `无可路由绑定（${parsed.brand === "none" ? "全部绑定" : `${parsed.brand} 品牌绑定`} 中没有可用绑定；incomplete 不可路由）。若本机已有 lark-cli profile，先 larklink_bindings(action=adopt) 导入为绑定；全新机器需先在终端 larklink bindings add（app secret 不经模型）。`, parsed);
 	if (candidates.length === 1) {
 		const sole = candidates[0];
 		const repair = sole.status !== "ready" ? `；该绑定状态 ${sole.status}，需修复授权而非换绑定` : "";
@@ -557,6 +558,199 @@ async function cmdAdopt(ctx, opts, emit = stdEmit) {
 	}, null, 2);
 	return 0;
 }
+function pendingAuthPath(home) {
+	return join(home, "pending-auth.json");
+}
+async function readPendingAuth(home) {
+	try {
+		const parsed = safeJson(await readFile(pendingAuthPath(home), "utf8"));
+		if (parsed === null || typeof parsed !== "object" || !parsed.profile || !parsed.deviceCode) return null;
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+async function writePendingAuth(home, flow) {
+	await mkdir(home, { recursive: true });
+	await writeFile(pendingAuthPath(home), JSON.stringify(flow, null, 2) + "\n", "utf8");
+}
+async function clearPendingAuth(home) {
+	await rm(pendingAuthPath(home), { force: true });
+}
+/** 尽力打开系统浏览器（DSH 宿主运行在用户本机；失败不阻塞，envelope 里报告）。 */
+function openInBrowser(url) {
+	try {
+		const cmd = process.platform === "win32" ? "rundll32" : process.platform === "darwin" ? "open" : "xdg-open";
+		const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
+		const child = spawn(cmd, args, {
+			shell: false,
+			stdio: "ignore",
+			detached: true
+		});
+		child.on("error", () => {});
+		child.unref();
+		return true;
+	} catch {
+		return false;
+	}
+}
+/**
+* auth：split-flow 授权/恢复（Q8-②：中断后每次都发起新流程，绝不缓存授权码复用）。
+* 全程无密钥经手——app secret 留在 lark-cli profile 里，lark-cli 官方 agent 契约本身就要求
+* agent 展示 verification_url/二维码并自行执行 --device-code 收尾。
+* - 发起：`auth login --domain <域> --no-wait --json` → verification_url + device_code + 二维码 →（默认）自动开浏览器 → 暂存待收尾
+* - 收尾：`auth login --device-code <code>`（码取自参数或暂存）→ 同步绑定状态
+*/
+async function cmdAuth(ctx, opts, emit = stdEmit) {
+	const home = ctx.home ?? larklinkHome();
+	if (opts.complete === true || opts.deviceCode !== void 0) {
+		let deviceCode = opts.deviceCode;
+		let fromStash = false;
+		if (deviceCode === void 0) {
+			const pending = await readPendingAuth(home);
+			if (pending === null) {
+				emit({
+					ok: false,
+					code: "no-pending-auth",
+					message: `没有进行中的授权流程（${pendingAuthPath(home)} 不存在）。先执行 auth-start 发起新流程。`
+				});
+				return 2;
+			}
+			if (pending.profile !== opts.profile) {
+				emit({
+					ok: false,
+					code: "pending-auth-mismatch",
+					message: `进行中的授权流程属于绑定 ${pending.profile}，与请求的 ${opts.profile} 不符。请先对 ${pending.profile} 收尾或重新发起。`
+				});
+				return 2;
+			}
+			if (Date.parse(pending.expiresAt) <= Date.now()) {
+				await clearPendingAuth(home);
+				emit({
+					ok: false,
+					code: "pending-auth-expired",
+					message: `授权流程已过期（发起于 ${pending.startedAt}）。请重新 auth-start 发起全新流程（Q8-②：不缓存旧授权码）。`
+				});
+				return 2;
+			}
+			deviceCode = pending.deviceCode;
+			fromStash = true;
+		}
+		const res = await ctx.runner([
+			"--profile",
+			opts.profile,
+			"auth",
+			"login",
+			"--device-code",
+			deviceCode,
+			"--json"
+		], { timeoutMs: 6e4 });
+		if (res.exitCode !== 0) {
+			emit({
+				ok: false,
+				code: "lark-cli-error",
+				exitCode: res.exitCode,
+				error: safeJson(res.stderr) ?? res.stderr.slice(0, 400),
+				hint: "若用户尚未在浏览器完成授权，请等用户确认后重新 auth-complete（轮询重试）"
+			});
+			return 1;
+		}
+		if (fromStash) await clearPendingAuth(home);
+		const health = await syncBindingStatus(ctx, home, opts.profile);
+		await appendAudit({
+			kind: "bindings",
+			profile: opts.profile,
+			message: `auth complete（status=${health.status ?? "?"}）`
+		}, home);
+		emit({
+			ok: true,
+			profile: opts.profile,
+			status: health.status,
+			userName: health.userName,
+			warning: health.warning,
+			next: health.status === "ready" ? "授权恢复，可继续原操作" : `状态仍为 ${health.status}，可能需要检查应用配置后重新授权`
+		}, null, 2);
+		return 0;
+	}
+	const domain = opts.domain ?? "docs";
+	const res = await ctx.runner([
+		"--profile",
+		opts.profile,
+		"auth",
+		"login",
+		"--domain",
+		domain,
+		"--no-wait",
+		"--json"
+	], { timeoutMs: 3e4 });
+	const payload = safeJson(res.stdout);
+	const errPayload = safeJson(res.stderr);
+	if (res.exitCode !== 0 || payload === null) {
+		emit({
+			ok: false,
+			code: "lark-cli-error",
+			exitCode: res.exitCode,
+			error: errPayload ?? res.stderr.slice(0, 400)
+		});
+		return 1;
+	}
+	const url = payload["verification_url"] ?? payload["url"];
+	const deviceCode = payload["device_code"] ?? payload["deviceCode"];
+	if (!url) {
+		emit({
+			ok: false,
+			code: "no-verification-url",
+			message: "lark-cli 未返回 verification_url",
+			payload
+		});
+		return 1;
+	}
+	const expiresInSec = typeof payload["expires_in"] === "number" ? payload["expires_in"] : 600;
+	let qrcode;
+	try {
+		await mkdir(home, { recursive: true });
+		const qrName = `qrcode-${opts.profile}.png`;
+		if ((await ctx.runner([
+			"auth",
+			"qrcode",
+			url,
+			"--output",
+			qrName
+		], {
+			timeoutMs: 15e3,
+			cwd: home
+		})).exitCode === 0) qrcode = join(home, qrName);
+	} catch {}
+	const flow = {
+		profile: opts.profile,
+		deviceCode: deviceCode ?? "",
+		verificationUrl: url,
+		startedAt: (/* @__PURE__ */ new Date()).toISOString(),
+		expiresAt: new Date(Date.now() + expiresInSec * 1e3).toISOString()
+	};
+	if (deviceCode !== void 0) await writePendingAuth(home, flow);
+	const browserOpened = opts.open !== false ? openInBrowser(url) : false;
+	await appendAudit({
+		kind: "bindings",
+		profile: opts.profile,
+		message: `auth start（domain=${domain}，expiresIn=${expiresInSec}s）`
+	}, home);
+	emit({
+		ok: true,
+		profile: opts.profile,
+		status: "auth-started",
+		verificationUrl: url,
+		qrcode,
+		expiresInSeconds: expiresInSec,
+		browserOpened,
+		next: [
+			"1. 让用户在浏览器（已自动打开；未打开则手动访问 verificationUrl 或扫码二维码）完成授权确认",
+			"2. 用户确认后调用 auth-complete（device_code 已暂存，无需携带）",
+			"3. 授权 URL 10 分钟内有效，过期须重新 auth-start（Q8-②）"
+		].join("\n")
+	}, null, 2);
+	return 0;
+}
 /**
 * 用真实 `auth status --json --verify` 结构同步（identities.user.{userName,tokenStatus,refreshExpiresAt}）。
 * 无 user 身份 → incomplete（绑定=app+user，bot-only 不可作用户身份路由）。
@@ -578,9 +772,10 @@ async function syncBindingStatus(ctx, home, profile) {
 		};
 	}
 	const status = mapStatus(user.tokenStatus ?? user.status, true);
+	const refreshExpiresAt = user.refreshExpiresAt;
 	let warning;
-	if (user.refreshExpiresAt !== void 0) {
-		const expiry = Date.parse(user.refreshExpiresAt);
+	if (refreshExpiresAt !== void 0) {
+		const expiry = Date.parse(refreshExpiresAt);
 		if (!Number.isNaN(expiry)) {
 			const hoursLeft = (expiry - Date.now()) / 36e5;
 			if (hoursLeft < 0) warning = `绑定 ${profile} refresh token 已过期，需重新授权`;
@@ -602,6 +797,7 @@ async function syncBindingStatus(ctx, home, profile) {
 		status,
 		userName: user.userName,
 		openId: user.openId,
+		refreshExpiresAt,
 		warning
 	};
 }
@@ -621,11 +817,17 @@ async function cmdList(ctx, opts, emit = stdEmit) {
 	const home = ctx.home ?? larklinkHome();
 	let registry = await loadRegistry(home);
 	const warnings = [];
+	/** 实时核验结果（openId / refreshExpiresAt 不落 registry，仅随本次信封透出）。 */
+	const liveInfo = /* @__PURE__ */ new Map();
 	if (!opts.fast) {
 		for (const b of registry.bindings) try {
 			const s = await syncBindingStatus(ctx, home, b.profile);
 			if (s.warning) warnings.push(s.warning);
-			if (opts.health && s.status && s.status !== "ready" && s.status !== "incomplete") warnings.push(`绑定 ${b.profile} 状态 ${s.status}：请 larklink bindings auth ${b.profile} 修复`);
+			if (s.openId !== void 0 || s.refreshExpiresAt !== void 0) liveInfo.set(b.profile, {
+				openId: s.openId,
+				refreshExpiresAt: s.refreshExpiresAt
+			});
+			if (opts.health && s.status && s.status !== "ready" && s.status !== "incomplete") warnings.push(`绑定 ${b.profile} 状态 ${s.status}：调用 larklink_bindings(action=auth-start, profile=${b.profile}) 发起登录修复`);
 		} catch (e) {
 			warnings.push(`绑定 ${b.profile} 状态同步失败：${e.message}`);
 		}
@@ -650,6 +852,8 @@ async function cmdList(ctx, opts, emit = stdEmit) {
 			brand: b.brand,
 			appId: b.appId,
 			userName: b.userName,
+			openId: liveInfo.get(b.profile)?.openId ?? b.openId,
+			refreshExpiresAt: liveInfo.get(b.profile)?.refreshExpiresAt,
 			status: b.status,
 			adopted: b.adopted ?? false
 		})),
@@ -960,7 +1164,8 @@ async function cmdExec(runner, opts, home = larklinkHome(), emit = stdEmit) {
 				code: "binding-needs-repair",
 				profile,
 				bindingStatus: result.bindingStatus,
-				message: `绑定 ${profile} 状态 ${result.bindingStatus}，请 larklink bindings auth ${profile} 修复后重试（不自动换绑定，Q1）`
+				message: `绑定 ${profile} 状态 ${result.bindingStatus}，需修复授权（不自动换绑定，Q1）`,
+				fix: `立即调用 larklink_bindings(action=auth-start, profile=${profile}) 发起登录：自动打开浏览器并生成二维码；用户确认后 auth-complete，然后重试本命令`
 			}, null, 2);
 			return 2;
 		}
@@ -1109,7 +1314,10 @@ function registerLarklinkTools(deps) {
 					additionalProperties: true,
 					description: "larklink JSON envelope"
 				},
-				render: (_args, value) => value
+				render: (_args, value) => [{
+					type: "text",
+					text: JSON.stringify(value, null, 2)
+				}]
 			},
 			...spec
 		}));
@@ -1117,7 +1325,7 @@ function registerLarklinkTools(deps) {
 	};
 	register({
 		name: "larklink_resolve",
-		description: "Resolve which lark/feishu account (binding) should operate on a document URL or bare token. Returns the routing decision (profile, confidence, brand) or an ambiguous candidate list with read-only probe annotations (accessible / no-permission / auth-failed / timeout). Never auto-picks among multiple candidates — ask the user.",
+		description: "Resolve which lark/feishu account (binding) should operate on a document URL or bare token, and manage lark-cli login lifecycle. Use PROACTIVELY whenever the user mentions a feishu.cn / larksuite.com / larkoffice.com / doubao.com document link or a bare token (doxcn/shtcn/wikcn/bascn/...), or when any lark-cli/larklink operation reports auth failure, token expiry, or not-logged-in — regardless of how many bindings exist. Returns the routing decision (profile, confidence, brand) or an ambiguous candidate list with read-only probe annotations (accessible / no-permission / auth-failed / timeout). Never auto-picks among multiple candidates — ask the user.",
 		parameters: {
 			input: {
 				type: "string",
@@ -1156,7 +1364,7 @@ function registerLarklinkTools(deps) {
 	});
 	register({
 		name: "larklink_exec",
-		description: "Execute a guarded lark-cli document-domain command (docs/drive/sheets/markdown/slides/base/whiteboard/wiki/mindnotes) as the resolved or explicitly named binding. Enforces: target consistency vs routing, no --as smuggling (use the as param), exit-10 confirmation fingerprint binding, timeout-unknown reporting. Prefer larklink_resolve first.",
+		description: "Execute a guarded lark-cli document-domain command (docs/drive/sheets/markdown/slides/base/whiteboard/wiki/mindnotes) as the resolved or explicitly named binding. Use for every feishu/lark document read/write operation (single OR multiple bindings). Enforces: target consistency vs routing, no --as smuggling (use the as param), exit-10 confirmation fingerprint binding, timeout-unknown reporting. Prefer larklink_resolve first. On binding-needs-repair, run larklink_bindings auth-start immediately instead of asking the user to use a terminal.",
 		parameters: {
 			args: {
 				type: "array",
@@ -1207,7 +1415,7 @@ function registerLarklinkTools(deps) {
 	});
 	register({
 		name: "larklink_bindings",
-		description: "Non-secret binding management: adopt existing lark-cli profiles as larklink bindings, list bindings with live status, run health sync (also cleans dead pins), manage document pins. Adding accounts / QR re-auth / removal involve secrets and must run in the user's terminal (larklink bindings add|auth|remove), never through this tool.",
+		description: "Binding management and lark-cli login lifecycle. Actions: adopt existing lark-cli profiles as larklink bindings; list bindings with live status; health sync (also cleans dead pins); manage document pins; auth-start initiates the QR login flow for a binding (auto-opens the browser, returns verification URL + QR code path; run it IMMEDIATELY whenever resolve/exec reports binding-needs-repair, auth-failed, needs_refresh, unauthorized, or incomplete — do not send the user to a terminal); auth-complete finishes login after the user confirms in the browser (device code is stashed server-side; no code needed). Only adding new apps (app secret via stdin) and removing bindings stay in the user's terminal (larklink bindings add|remove).",
 		parameters: {
 			action: {
 				type: "string",
@@ -1218,13 +1426,15 @@ function registerLarklinkTools(deps) {
 					"health",
 					"pin-add",
 					"pin-remove",
-					"pin-list"
+					"pin-list",
+					"auth-start",
+					"auth-complete"
 				],
 				description: "Management action."
 			},
 			profile: {
 				type: "string",
-				description: "Binding profile name (adopt filter / pin target)."
+				description: "Binding profile name (adopt filter / pin target / auth-start & auth-complete target)."
 			},
 			token: {
 				type: "string",
@@ -1233,6 +1443,14 @@ function registerLarklinkTools(deps) {
 			fast: {
 				type: "boolean",
 				description: "list: skip live status verification."
+			},
+			domain: {
+				type: "string",
+				description: "auth-start: lark-cli scope domains, comma-separated (default docs)."
+			},
+			open: {
+				type: "boolean",
+				description: "auth-start: open the browser at the verification URL (default true)."
 			}
 		},
 		async execute(args) {
@@ -1269,6 +1487,19 @@ function registerLarklinkTools(deps) {
 				}
 				case "pin-list":
 					await cmdPin({ op: "list" }, home, cap.emit);
+					break;
+				case "auth-start":
+				case "auth-complete":
+					if (profile === void 0) throw new Error(`${action} 需要 profile`);
+					await cmdAuth({
+						runner,
+						home
+					}, {
+						profile,
+						domain: args["domain"] !== void 0 ? String(args["domain"]) : void 0,
+						complete: action === "auth-complete",
+						open: args["open"] !== false
+					}, cap.emit);
 					break;
 				default: throw new Error(`未知 action: ${action}`);
 			}
@@ -1313,6 +1544,14 @@ function captureEmit() {
 		emit,
 		payload: () => value
 	};
+}
+function safeParseBody(text) {
+	try {
+		const parsed = JSON.parse(text);
+		return parsed !== null && typeof parsed === "object" ? parsed : {};
+	} catch {
+		return {};
+	}
 }
 function registerLarklinkRoutes(deps) {
 	const { ctx, runner, home } = deps;
@@ -1383,6 +1622,29 @@ function registerLarklinkRoutes(deps) {
 			}, { health: true }, cap.emit);
 			sendJson(res, 200, cap.payload());
 		});
+		const authRoute = (complete) => async (req, res) => {
+			const body = safeParseBody(await readBody(req).catch(() => ""));
+			const profile = typeof body["profile"] === "string" ? body["profile"] : void 0;
+			if (profile === void 0 || profile === "") {
+				sendJson(res, 400, {
+					ok: false,
+					error: "需要 JSON body { profile }"
+				});
+				return;
+			}
+			const cap = captureEmit();
+			await cmdAuth({
+				runner,
+				home
+			}, {
+				profile,
+				complete,
+				open: !complete
+			}, cap.emit);
+			sendJson(res, 200, cap.payload());
+		};
+		route("POST", `${ROUTE_BASE}/auth-start`, authRoute(false));
+		route("POST", `${ROUTE_BASE}/auth-complete`, authRoute(true));
 		return () => {
 			for (const d of [...disposers].reverse()) d();
 			disposers.length = 0;
@@ -1397,30 +1659,44 @@ function registerLarklinkRoutes(deps) {
 // src/skill-content.ts
 /** 内嵌 SKILL 内容（随插件注册到 DSH skills 服务，source: bundled）。 */
 const LARKLINK_SKILL_NAME = "larklink";
-const LARKLINK_SKILL_DESCRIPTION = "Multi-account Feishu/Lark document operations routed through larklink tools: resolve which bound account operates on a document URL/token, then execute guarded lark-cli document commands. Use whenever the user provides a feishu.cn / larksuite.com / larkoffice.com / doubao.com document link or a bare token (doxcn/shtcn/wikcn/bascn...) and the machine has more than one lark binding.";
-const LARKLINK_SKILL_MARKDOWN = `# larklink —— 多账号飞书/Lark 文档操作路由
+const LARKLINK_SKILL_DESCRIPTION = "Feishu/Lark document operations + login lifecycle, routed through larklink tools. Use PROACTIVELY, regardless of how many accounts are bound, whenever: (1) the user provides a feishu.cn / larksuite.com / larkoffice.com / doubao.com document link or a bare token (doxcn/shtcn/wikcn/bascn/doccn/fldcn/obcn...), or asks to read/edit/create any Feishu/Lark document, sheet, base, wiki or slides; (2) any lark-cli or lark-* skill operation fails with auth errors, token expiry, needs_refresh, unauthorized, or not-logged-in — larklink triggers the QR login flow automatically (opens the browser; no terminal needed).";
+const LARKLINK_SKILL_MARKDOWN = `# larklink —— 飞书/Lark 文档操作路由与登录管理
 
-## 何时使用
+## 何时使用（无条件触发，不看绑定数量）
 
 - 用户给出 feishu.cn / larksuite.com / larkoffice.com / doubao.com 的文档链接，或 doxcn / doccn / wikcn / shtcn / bascn / fldcn / obcn 裸 token，要求读取或修改
-- 本机有多个 lark 账号（绑定）时，一切文档域操作必须经 larklink 路由
+- 用户要求创建/编辑飞书文档、表格、Base、知识库、幻灯片
+- 任何 lark-cli / lark-* skill 操作报授权错误（未登录 / token 过期 / needs_refresh / unauthorized / incomplete）——立即走本 skill 的登录修复流程
+
+**单一绑定也要走 larklink**：larklink 统一提供路由、授权生命周期管理（自动触发扫码登录）、目标守卫与审计。不要因为"只有一个账号"就绕过。
 
 ## 硬纪律（多账号防串号）
 
-1. registry 存在 **≥2 个可用绑定**时：文档域操作必须 \`larklink_resolve\` → \`larklink_exec\`，**禁止**直接调用 lark-cli 文档命令（会静默打到默认账号）。
-2. 单一绑定时：默认 profile 即唯一账号，可直接用 lark-* skills，无需 larklink。
-3. 身份选择优先级：用户显式指定 > 文档 pin > 唯一绑定 > 询问用户。**能力 ≠ 意图**：探测结果、ready 状态、tenantHint 永不构成自动换号理由。绑定失效 → 提示用户修复授权，绝不换绑定重试。
-4. 执行身份默认 user；以应用身份（bot）执行必须用户明确要求（\`as: "bot"\`），绝不静默回退。
+1. 一切文档域操作必须 \`larklink_resolve\` → \`larklink_exec\`，**禁止**直接调用 lark-cli 文档命令（多账号时会静默打到默认账号，单账号时绕过授权管理与审计）。
+2. 身份选择优先级：用户显式指定 > 文档 pin > 唯一绑定 > 询问用户。**能力 ≠ 意图**：探测结果、ready 状态、tenantHint 永不构成自动换号理由。绑定失效 → 走登录修复流程，绝不换绑定重试。
+3. 执行身份默认 user；以应用身份（bot）执行必须用户明确要求（\`as: "bot"\`），绝不静默回退。
 
 ## 标准流程
 
 1. \`larklink_resolve(input)\` → \`resolved\`（profile / confidence / wikiUnwrapNeeded）或 \`ambiguous\`（candidates 含 probe 标注：accessible / no-permission / auth-failed / timeout）
+   - 报 \`no-routable-binding\` 且本机有 lark-cli profile：先 \`larklink_bindings(action=adopt)\` 导入再重试 resolve
+   - 全新机器（无任何 profile）：提示用户在终端执行 \`larklink bindings add\`（app secret 不经模型）
 2. ambiguous → 把候选与标注呈现给用户选择；选择后 \`larklink_resolve(input, askedProfile, pin=true)\` 记住偏好
 3. \`larklink_exec(args, url 或 profile)\` 执行 lark-cli 文档命令，返回信封：
    - \`needs-confirmation\`：向用户展示 action 与参数预览；用户明确同意后，**原样命令** + \`yes=true\` + 返回的 \`confirmationId\`（指纹不符会被拒绝——确认不可挪用）
    - \`timeout-unknown\`：禁止直接重试同命令；先只读核查（drive +inspect / docs +fetch）确认服务端实际状态
    - \`error\`：读 error 字段修复参数或授权后重试
 4. wiki 链接（wikcn…）先 \`drive +inspect\` 解包出真实 token/type 再路由到对应命令
+
+## 登录修复（未登录/授权失效时自动触发，不请用户去终端）
+
+只要 resolve / exec / 探测出现 \`binding-needs-repair\`、\`auth-failed\`、\`needs_refresh\`、\`unauthorized\`、\`incomplete\` 任一信号，立即：
+
+1. \`larklink_bindings(action=auth-start, profile=<绑定>)\` —— 自动打开系统浏览器并生成二维码（envelope 含 verificationUrl、qrcode 路径、expiresInSeconds）。把 verificationUrl 作为可点链接给用户；若环境支持读图，用 read_image 展示 qrcode PNG；浏览器没自动打开时提醒用户手动点链接或扫码
+2. 等用户在浏览器完成授权确认（10 分钟内有效）。用户回复完成后：\`larklink_bindings(action=auth-complete, profile=<绑定>)\`（device_code 已在插件侧暂存，无需携带；过期会报 pending-auth-expired，届时重新 auth-start）
+3. auth-complete 返回 ready 后**原样重试**之前的操作
+
+注意：auth-complete 失败通常意味着用户还没在浏览器确认——提示用户确认后再次 auth-complete，不要立刻重新发起。绝不静默换绑定。
 
 ## 写操作纪律
 
@@ -1436,9 +1712,8 @@ docs · drive · sheets · markdown · slides · base · whiteboard · wiki · m
 
 ## 绑定管理
 
-- 新增账号、授权修复（扫码 split-flow）、删除绑定：**让用户在终端执行** \`larklink bindings add|auth|remove\` —— app secret 与授权码不经模型上下文
-- 工具 \`larklink_bindings\` 仅做无敏感操作：adopt（导入既有 profile）/ list / health / pin 管理
-- 绑定授权过期（needs_refresh/unauthorized）：报告用户执行 \`larklink bindings auth <profile>\`，不要反复重试
+- \`larklink_bindings\` 工具动作：adopt（导入既有 profile）/ list / health / pin 管理 / **auth-start / auth-complete（扫码登录与授权修复，无密钥经手）**
+- 仅以下操作让用户在终端执行：\`larklink bindings add\`（新建应用，app secret 走 stdin）、\`larklink bindings remove\`（破坏性删除）
 `;
 // src/index.ts
 /**

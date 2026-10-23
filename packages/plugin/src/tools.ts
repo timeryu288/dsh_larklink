@@ -5,11 +5,11 @@
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { cmdResolve } from "@timeryu288/larklink-cli/commands/resolve";
 import { cmdExec } from "@timeryu288/larklink-cli/commands/exec";
-import { cmdAdopt, cmdList, cmdPin, type Emit } from "@timeryu288/larklink-cli/commands/bindings";
+import { cmdAdopt, cmdAuth, cmdList, cmdPin, type Emit } from "@timeryu288/larklink-cli/commands/bindings";
 
 /** 结构等价于 cli 层 LarkRunner（dts 打包不透传子路径类型，故本地声明）。 */
 export interface LarkRunnerLike {
-  (args: string[], opts?: { timeoutMs?: number; stdin?: string }): Promise<{
+  (args: string[], opts?: { timeoutMs?: number; stdin?: string; cwd?: string }): Promise<{
     exitCode: number;
     stdout: string;
     stderr: string;
@@ -61,7 +61,9 @@ export function registerLarklinkTools(deps: {
       defineToolLoose({
         output: {
           schema: { type: "object", additionalProperties: true, description: "larklink JSON envelope" },
-          render: (_args: unknown, value: unknown) => value,
+          render: (_args: unknown, value: unknown) => [
+            { type: "text", text: JSON.stringify(value, null, 2) },
+          ],
         },
         ...spec,
       }),
@@ -72,7 +74,7 @@ export function registerLarklinkTools(deps: {
   register({
     name: "larklink_resolve",
         description:
-          "Resolve which lark/feishu account (binding) should operate on a document URL or bare token. Returns the routing decision (profile, confidence, brand) or an ambiguous candidate list with read-only probe annotations (accessible / no-permission / auth-failed / timeout). Never auto-picks among multiple candidates — ask the user.",
+      "Resolve which lark/feishu account (binding) should operate on a document URL or bare token, and manage lark-cli login lifecycle. Use PROACTIVELY whenever the user mentions a feishu.cn / larksuite.com / larkoffice.com / doubao.com document link or a bare token (doxcn/shtcn/wikcn/bascn/...), or when any lark-cli/larklink operation reports auth failure, token expiry, or not-logged-in — regardless of how many bindings exist. Returns the routing decision (profile, confidence, brand) or an ambiguous candidate list with read-only probe annotations (accessible / no-permission / auth-failed / timeout). Never auto-picks among multiple candidates — ask the user.",
         parameters: {
           input: { type: "string", required: true, description: "Document URL or bare token (doxcn/shtcn/wikcn/bascn/...)" },
           explicitProfile: { type: "string", description: "User explicitly named the binding to use this turn." },
@@ -102,7 +104,7 @@ export function registerLarklinkTools(deps: {
   register({
     name: "larklink_exec",
         description:
-          "Execute a guarded lark-cli document-domain command (docs/drive/sheets/markdown/slides/base/whiteboard/wiki/mindnotes) as the resolved or explicitly named binding. Enforces: target consistency vs routing, no --as smuggling (use the as param), exit-10 confirmation fingerprint binding, timeout-unknown reporting. Prefer larklink_resolve first.",
+          "Execute a guarded lark-cli document-domain command (docs/drive/sheets/markdown/slides/base/whiteboard/wiki/mindnotes) as the resolved or explicitly named binding. Use for every feishu/lark document read/write operation (single OR multiple bindings). Enforces: target consistency vs routing, no --as smuggling (use the as param), exit-10 confirmation fingerprint binding, timeout-unknown reporting. Prefer larklink_resolve first. On binding-needs-repair, run larklink_bindings auth-start immediately instead of asking the user to use a terminal.",
         parameters: {
           args: { type: "array", items: { type: "string" }, required: true, description: "lark-cli command after the profile flag, e.g. [\"docs\",\"+update\",\"--doc\",\"<url>\",\"--content\",\"…\"]" },
           url: { type: "string", description: "Document URL/token being operated on (enables routing + target guard)." },
@@ -136,12 +138,19 @@ export function registerLarklinkTools(deps: {
   register({
     name: "larklink_bindings",
         description:
-          "Non-secret binding management: adopt existing lark-cli profiles as larklink bindings, list bindings with live status, run health sync (also cleans dead pins), manage document pins. Adding accounts / QR re-auth / removal involve secrets and must run in the user's terminal (larklink bindings add|auth|remove), never through this tool.",
+          "Binding management and lark-cli login lifecycle. Actions: adopt existing lark-cli profiles as larklink bindings; list bindings with live status; health sync (also cleans dead pins); manage document pins; auth-start initiates the QR login flow for a binding (auto-opens the browser, returns verification URL + QR code path; run it IMMEDIATELY whenever resolve/exec reports binding-needs-repair, auth-failed, needs_refresh, unauthorized, or incomplete — do not send the user to a terminal); auth-complete finishes login after the user confirms in the browser (device code is stashed server-side; no code needed). Only adding new apps (app secret via stdin) and removing bindings stay in the user's terminal (larklink bindings add|remove).",
         parameters: {
-          action: { type: "string", required: true, enum: ["adopt", "list", "health", "pin-add", "pin-remove", "pin-list"], description: "Management action." },
-          profile: { type: "string", description: "Binding profile name (adopt filter / pin target)." },
+          action: {
+            type: "string",
+            required: true,
+            enum: ["adopt", "list", "health", "pin-add", "pin-remove", "pin-list", "auth-start", "auth-complete"],
+            description: "Management action.",
+          },
+          profile: { type: "string", description: "Binding profile name (adopt filter / pin target / auth-start & auth-complete target)." },
           token: { type: "string", description: "Document token for pin-add / pin-remove." },
           fast: { type: "boolean", description: "list: skip live status verification." },
+          domain: { type: "string", description: "auth-start: lark-cli scope domains, comma-separated (default docs)." },
+          open: { type: "boolean", description: "auth-start: open the browser at the verification URL (default true)." },
         },
         async execute(args: Record<string, unknown>) {
           const cap = capture();
@@ -165,6 +174,21 @@ export function registerLarklinkTools(deps: {
             case "pin-list":
               await cmdPin({ op: "list" }, home, cap.emit);
               break;
+            case "auth-start":
+            case "auth-complete": {
+              if (profile === undefined) throw new Error(`${action} 需要 profile`);
+              await cmdAuth(
+                { runner, home },
+                {
+                  profile,
+                  domain: args["domain"] !== undefined ? String(args["domain"]) : undefined,
+                  complete: action === "auth-complete",
+                  open: args["open"] !== false,
+                },
+                cap.emit,
+              );
+              break;
+            }
             default:
               throw new Error(`未知 action: ${action}`);
           }
