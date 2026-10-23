@@ -1530,9 +1530,21 @@ function fenceViolation(req) {
 function readBody(req) {
 	return new Promise((resolve, reject) => {
 		let data = "";
-		req.on("data", (c) => data += c.toString("utf8"));
-		req.on("end", () => resolve(data));
-		req.on("error", reject);
+		let done = false;
+		/** 单次收尾：防 end/error/超时重复触发；清掉超时定时器。 */
+		const finish = (settle) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			settle();
+		};
+		const timer = setTimeout(() => finish(() => reject(/* @__PURE__ */ new Error("body timeout"))), 5e3);
+		req.on("data", (c) => {
+			data += c.toString("utf8");
+			if (data.length > 65536) finish(() => reject(/* @__PURE__ */ new Error("body too large")));
+		});
+		req.on("end", () => finish(() => resolve(data)));
+		req.on("error", (e) => finish(() => reject(e)));
 	});
 }
 function captureEmit() {

@@ -521,13 +521,19 @@ export function apply(ctx: ClientCtx): (() => void) | void {
   );
 
   // 设置页：「LarkLink 账户管理」（settings.section 列表槽；照 dshmarket 先例 id/order/label + 内容组件）
-  if (ctx.slots !== null && typeof ctx.slots.register === "function") {
+  if (ctx.slots != null && typeof ctx.slots.register === "function") {
+    // 防护：宿主未声明该槽时 register 会 throw（dsh-client-ui-slots:165）——降级跳过设置页，
+    // 不让异常逃逸导致整个客户端半边（含侧栏面板）被连带判失败。
+    try {
     push(
       ctx.slots.register(
         { name: "settings.section", id: SETTINGS_SECTION_ID, order: 50, label: () => "LarkLink 账号管理" },
         () => React.createElement(SettingsSection),
       ),
     );
+    } catch (e) {
+      console.warn("[dsh-larklink] settings.section 槽不可用（宿主未声明？），设置页已跳过，侧栏面板不受影响", e);
+    }
   }
 
   return () => {

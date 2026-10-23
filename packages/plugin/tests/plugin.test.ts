@@ -215,6 +215,13 @@ describe("插件：genui 后端路由", () => {
     get.handler(fakeReq("GET", "/larklink/bindings", { host: "x", origin: "http://evil" }), res3);
     expect(res3.status).toBe(403);
 
+    // 超大 body（>64KB）→ readBody 拒绝 → 500 JSON（不炸 webServer）
+    const res4 = fakeRes();
+    adopt.handler(fakeReq("POST", "/larklink/adopt", { host: "x", origin: "http://x" }, "x".repeat(70_000)), res4);
+    await waitFor(res4);
+    expect(res4.status).toBe(500);
+    expect((JSON.parse(res4.body) as { error: string }).error).toBe("body too large");
+
     cleanup();
   });
 });

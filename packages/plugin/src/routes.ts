@@ -56,9 +56,21 @@ function fenceViolation(req: HttpRequest): string | undefined {
 function readBody(req: HttpRequest): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
-    req.on("data", (c) => (data += c.toString("utf8")));
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
+    let done = false;
+    /** 单次收尾：防 end/error/超时重复触发；清掉超时定时器。 */
+    const finish = (settle: () => void): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      settle();
+    };
+    const timer = setTimeout(() => finish(() => reject(new Error("body timeout"))), 5000);
+    req.on("data", (c) => {
+      data += c.toString("utf8");
+      if (data.length > 65_536) finish(() => reject(new Error("body too large")));
+    });
+    req.on("end", () => finish(() => resolve(data)));
+    req.on("error", (e) => finish(() => reject(e)));
   });
 }
 

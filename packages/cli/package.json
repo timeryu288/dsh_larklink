@@ -1,6 +1,6 @@
 {
   "name": "@timeryu288/larklink-cli",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "description": "LarkLink CLI: binding lifecycle, resolve routing, and guarded exec over lark-cli.",
   "type": "module",
   "license": "SEE LICENSE IN ../../LICENSE",

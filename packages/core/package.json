@@ -1,6 +1,6 @@
 {
   "name": "@timeryu288/larklink-core",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "description": "LarkLink core: document URL/token parsing, binding registry, and routing decision (pure, no IO).",
   "type": "module",
   "license": "SEE LICENSE IN ../../LICENSE",
