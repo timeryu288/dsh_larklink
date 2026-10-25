@@ -311,7 +311,11 @@ describe("插件：自动登录（auth-start / auth-complete）", () => {
 
   it("larklink_bindings auth-start → auth-started 信封（URL + 暂存 device flow）", async () => {
     await seedSolo();
-    const { runner, calls } = seqRunner([okResult(DEVICE_FLOW), okResult()]);
+    const { runner, calls } = seqRunner([
+      okResult(JSON.stringify({ identities: { user: { userName: "于跃", openId: "ou_1", tokenStatus: "expired" } } })), // 预检：仍不可用
+      okResult(DEVICE_FLOW), // auth login --no-wait
+      okResult(), // auth qrcode
+    ]);
     const { ctx, tools } = fakeCtx();
     applyTo(ctx, { home }, { runner: runner as never });
     const bindingsTool = tools.find((t) => t.name === "larklink_bindings")!;
@@ -319,9 +323,24 @@ describe("插件：自动登录（auth-start / auth-complete）", () => {
     expect(out["ok"]).toBe(true);
     expect(out["status"]).toBe("auth-started");
     expect(out["verificationUrl"]).toContain("accounts.feishu.cn");
-    expect(calls[0]).toEqual(["--profile", "solo", "auth", "login", "--domain", "docs", "--no-wait", "--json"]);
+    expect(calls[1]).toEqual(["--profile", "solo", "auth", "login", "--domain", "docs", "--no-wait", "--json"]);
     const pending = JSON.parse(await readFile(join(home, "pending-auth.json"), "utf8")) as { deviceCode: string };
     expect(pending.deviceCode).toBe("dev_1");
+  });
+
+  it("larklink_bindings auth-start：绑定已可用 → already-ready（回归：反复授权死循环）", async () => {
+    await seedSolo();
+    const { runner, calls } = seqRunner([
+      okResult(JSON.stringify({ identities: { user: { userName: "于跃", openId: "ou_1", tokenStatus: "valid" } } })), // 预检：其实可用
+    ]);
+    const { ctx, tools } = fakeCtx();
+    applyTo(ctx, { home }, { runner: runner as never });
+    const bindingsTool = tools.find((t) => t.name === "larklink_bindings")!;
+    const out = (await bindingsTool.execute({ action: "auth-start", profile: "solo", open: false })) as Record<string, unknown>;
+    expect(out["ok"]).toBe(true);
+    expect(out["status"]).toBe("already-ready");
+    expect(calls).toHaveLength(1); // 未发起 auth login
+    await expect(readFile(join(home, "pending-auth.json"))).rejects.toThrow(); // 未产生新流程
   });
 
   it("larklink_bindings auth-complete → ready 并清暂存", async () => {
@@ -355,7 +374,11 @@ describe("插件：自动登录（auth-start / auth-complete）", () => {
 
   it("genui POST /larklink/auth-start：body 带 profile → auth-started；缺 profile → 400", async () => {
     await seedSolo();
-    const { runner } = seqRunner([okResult(DEVICE_FLOW), okResult()]);
+    const { runner } = seqRunner([
+      okResult(JSON.stringify({ identities: { user: { userName: "于跃", tokenStatus: "expired" } } })), // 预检
+      okResult(DEVICE_FLOW),
+      okResult(),
+    ]);
     const { ctx, routes } = fakeCtx();
     applyTo(ctx, { home }, { runner: runner as never });
     const start = routes.find((r) => r.path === "/larklink/auth-start")!;

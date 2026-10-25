@@ -236,6 +236,25 @@ export async function cmdAuth(
   }
 
   // ---- 发起步骤 ----
+  // 先实时核验：access token 由 lark-cli 下次调用自动刷新，needs_refresh ≠ 失效（只有 refresh token 过期才需重登）。
+  // 绑定实际可用时不打扰用户重新扫码（回归：陈旧缓存状态导致的反复授权死循环）。
+  try {
+    const pre = await syncBindingStatus(ctx, home, opts.profile);
+    if (pre.status === "ready") {
+      await clearPendingAuth(home);
+      await appendAudit({ kind: "bindings", profile: opts.profile, message: "auth start skipped（already-ready）" }, home);
+      emit({
+        ok: true,
+        profile: opts.profile,
+        status: "already-ready",
+        userName: pre.userName,
+        refreshExpiresAt: pre.refreshExpiresAt,
+        message: `绑定 ${opts.profile} 授权当前有效，无需重新登录（已实时核验）`,
+        next: "直接重试原操作即可（auth-start 未打开浏览器、未产生新流程）",
+      }, null, 2);
+      return 0;
+    }
+  } catch { /* 预检失败不阻塞正常发起流程 */ }
   const domain = opts.domain ?? "docs";
   const res = await ctx.runner(
     ["--profile", opts.profile, "auth", "login", "--domain", domain, "--no-wait", "--json"],
@@ -313,7 +332,7 @@ interface AuthStatusPayload {
  * 用真实 `auth status --json --verify` 结构同步（identities.user.{userName,tokenStatus,refreshExpiresAt}）。
  * 无 user 身份 → incomplete（绑定=app+user，bot-only 不可作用户身份路由）。
  */
-async function syncBindingStatus(
+export async function syncBindingStatus(
   ctx: BindingsCtx,
   home: string,
   profile: string,

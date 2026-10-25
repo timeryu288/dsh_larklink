@@ -672,6 +672,27 @@ async function cmdAuth(ctx, opts, emit = stdEmit) {
 		}, null, 2);
 		return 0;
 	}
+	try {
+		const pre = await syncBindingStatus(ctx, home, opts.profile);
+		if (pre.status === "ready") {
+			await clearPendingAuth(home);
+			await appendAudit({
+				kind: "bindings",
+				profile: opts.profile,
+				message: "auth start skipped（already-ready）"
+			}, home);
+			emit({
+				ok: true,
+				profile: opts.profile,
+				status: "already-ready",
+				userName: pre.userName,
+				refreshExpiresAt: pre.refreshExpiresAt,
+				message: `绑定 ${opts.profile} 授权当前有效，无需重新登录（已实时核验）`,
+				next: "直接重试原操作即可（auth-start 未打开浏览器、未产生新流程）"
+			}, null, 2);
+			return 0;
+		}
+	} catch {}
 	const domain = opts.domain ?? "docs";
 	const res = await ctx.runner([
 		"--profile",
@@ -1151,23 +1172,34 @@ async function cmdExec(runner, opts, home = larklinkHome(), emit = stdEmit) {
 		confidence = result.confidence;
 		routedToken = result.parsed.token;
 		if (result.bindingStatus !== "ready") {
-			await appendAudit({
-				kind: "exec",
-				profile,
-				outcome: "blocked-auth",
-				confidence,
-				domain,
-				as
-			}, home);
-			emit({
-				ok: false,
-				code: "binding-needs-repair",
-				profile,
-				bindingStatus: result.bindingStatus,
-				message: `绑定 ${profile} 状态 ${result.bindingStatus}，需修复授权（不自动换绑定，Q1）`,
-				fix: `立即调用 larklink_bindings(action=auth-start, profile=${profile}) 发起登录：自动打开浏览器并生成二维码；用户确认后 auth-complete，然后重试本命令`
-			}, null, 2);
-			return 2;
+			let liveStatus = result.bindingStatus;
+			try {
+				const synced = await syncBindingStatus({
+					runner,
+					home
+				}, home, profile);
+				if (synced.status !== void 0) liveStatus = synced.status;
+			} catch {}
+			if (liveStatus !== "ready") {
+				await appendAudit({
+					kind: "exec",
+					profile,
+					outcome: "blocked-auth",
+					confidence,
+					domain,
+					as
+				}, home);
+				emit({
+					ok: false,
+					code: "binding-needs-repair",
+					profile,
+					bindingStatus: liveStatus,
+					liveVerified: true,
+					message: `绑定 ${profile} 状态 ${liveStatus}（已实时核验 auth status --verify），需修复授权（不自动换绑定，Q1）`,
+					fix: `立即调用 larklink_bindings(action=auth-start, profile=${profile}) 发起登录：自动打开浏览器并生成二维码；用户确认后 auth-complete，然后重试本命令`
+				}, null, 2);
+				return 2;
+			}
 		}
 	} catch (e) {
 		const err = e;
@@ -1181,7 +1213,22 @@ async function cmdExec(runner, opts, home = larklinkHome(), emit = stdEmit) {
 	else if (opts.profile !== void 0) {
 		const binding = findBinding(registry, opts.profile);
 		if (!binding) return fail("binding-not-found", `绑定 ${opts.profile} 不存在`);
-		if (binding.status === "incomplete") return fail("binding-incomplete", `绑定 ${opts.profile} 授权未完成（Q8）`);
+		if (binding.status !== "ready") {
+			let liveStatus = binding.status;
+			try {
+				const synced = await syncBindingStatus({
+					runner,
+					home
+				}, home, opts.profile);
+				if (synced.status !== void 0) liveStatus = synced.status;
+			} catch {}
+			if (liveStatus === "incomplete") return fail("binding-incomplete", `绑定 ${opts.profile} 授权未完成（已实时核验，Q8）`);
+			if (liveStatus !== "ready") return fail("binding-needs-repair", `绑定 ${opts.profile} 状态 ${liveStatus}（已实时核验），需修复授权`, {
+				bindingStatus: liveStatus,
+				liveVerified: true,
+				fix: `立即调用 larklink_bindings(action=auth-start, profile=${opts.profile}) 发起登录`
+			});
+		}
 		profile = opts.profile;
 		confidence = "explicit";
 	} else return fail("usage", "需要 --url（自动路由）或 --profile（显式指定）之一");
@@ -1415,7 +1462,7 @@ function registerLarklinkTools(deps) {
 	});
 	register({
 		name: "larklink_bindings",
-		description: "Binding management and lark-cli login lifecycle. Actions: adopt existing lark-cli profiles as larklink bindings; list bindings with live status; health sync (also cleans dead pins); manage document pins; auth-start initiates the QR login flow for a binding (auto-opens the browser, returns verification URL + QR code path; run it IMMEDIATELY whenever resolve/exec reports binding-needs-repair, auth-failed, needs_refresh, unauthorized, or incomplete — do not send the user to a terminal); auth-complete finishes login after the user confirms in the browser (device code is stashed server-side; no code needed). Only adding new apps (app secret via stdin) and removing bindings stay in the user's terminal (larklink bindings add|remove).",
+		description: "Binding management and lark-cli login lifecycle. Actions: adopt existing lark-cli profiles as larklink bindings; list bindings with live status; health sync (also cleans dead pins); manage document pins; auth-start FIRST live-verifies the binding and returns status:\"already-ready\" when it is actually usable (stale cached needs_refresh — just retry the operation, do NOT ask the user to scan) or status:\"auth-started\" with the QR flow (auto-opens the browser, returns verification URL + QR code path; run it IMMEDIATELY whenever resolve/exec reports binding-needs-repair, auth-failed, needs_refresh, unauthorized, or incomplete — do not send the user to a terminal); auth-complete finishes login after the user confirms in the browser (device code is stashed server-side; no code needed). Only adding new apps (app secret via stdin) and removing bindings stay in the user's terminal (larklink bindings add|remove).",
 		parameters: {
 			action: {
 				type: "string",
@@ -1704,11 +1751,13 @@ const LARKLINK_SKILL_MARKDOWN = `# larklink —— 飞书/Lark 文档操作路�
 
 只要 resolve / exec / 探测出现 \`binding-needs-repair\`、\`auth-failed\`、\`needs_refresh\`、\`unauthorized\`、\`incomplete\` 任一信号，立即：
 
-1. \`larklink_bindings(action=auth-start, profile=<绑定>)\` —— 自动打开系统浏览器并生成二维码（envelope 含 verificationUrl、qrcode 路径、expiresInSeconds）。把 verificationUrl 作为可点链接给用户；若环境支持读图，用 read_image 展示 qrcode PNG；浏览器没自动打开时提醒用户手动点链接或扫码
+1. \`larklink_bindings(action=auth-start, profile=<绑定>)\` —— **它会先实时核验**（access token 由 lark-cli 自动刷新，needs_refresh ≠ 失效）：
+   - 返回 \`status: "already-ready"\`：绑定其实可用（缓存状态陈旧），**不要**再要求用户扫码——直接原样重试刚才的操作
+   - 返回 \`status: "auth-started"\`：自动打开系统浏览器并生成二维码（envelope 含 verificationUrl、qrcode 路径、expiresInSeconds）。把 verificationUrl 作为可点链接给用户；若环境支持读图，用 read_image 展示 qrcode PNG；浏览器没自动打开时提醒用户手动点链接或扫码
 2. 等用户在浏览器完成授权确认（10 分钟内有效）。用户回复完成后：\`larklink_bindings(action=auth-complete, profile=<绑定>)\`（device_code 已在插件侧暂存，无需携带；过期会报 pending-auth-expired，届时重新 auth-start）
 3. auth-complete 返回 ready 后**原样重试**之前的操作
 
-注意：auth-complete 失败通常意味着用户还没在浏览器确认——提示用户确认后再次 auth-complete，不要立刻重新发起。绝不静默换绑定。
+注意：exec 在拦截前也会先实时核验缓存状态（needs_refresh 但实际可用时会直接放行）——只有真正失效（refresh token 过期等）才会返回 binding-needs-repair。auth-complete 失败通常意味着用户还没在浏览器确认——提示用户确认后再次 auth-complete，不要立刻重新发起。绝不静默换绑定。
 
 ## 写操作纪律
 

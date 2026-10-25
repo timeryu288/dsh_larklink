@@ -1,6 +1,6 @@
 {
   "name": "@timeryu/dsh-larklink",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "DeepSeek Harness plugin: multi-account lark-cli routing with guarded document exec (larklink_resolve / larklink_exec / larklink_bindings).",
   "type": "module",
   "license": "MIT",

@@ -37,11 +37,13 @@ export const LARKLINK_SKILL_MARKDOWN = `# larklink —— 飞书/Lark 文档操�
 
 只要 resolve / exec / 探测出现 \`binding-needs-repair\`、\`auth-failed\`、\`needs_refresh\`、\`unauthorized\`、\`incomplete\` 任一信号，立即：
 
-1. \`larklink_bindings(action=auth-start, profile=<绑定>)\` —— 自动打开系统浏览器并生成二维码（envelope 含 verificationUrl、qrcode 路径、expiresInSeconds）。把 verificationUrl 作为可点链接给用户；若环境支持读图，用 read_image 展示 qrcode PNG；浏览器没自动打开时提醒用户手动点链接或扫码
+1. \`larklink_bindings(action=auth-start, profile=<绑定>)\` —— **它会先实时核验**（access token 由 lark-cli 自动刷新，needs_refresh ≠ 失效）：
+   - 返回 \`status: "already-ready"\`：绑定其实可用（缓存状态陈旧），**不要**再要求用户扫码——直接原样重试刚才的操作
+   - 返回 \`status: "auth-started"\`：自动打开系统浏览器并生成二维码（envelope 含 verificationUrl、qrcode 路径、expiresInSeconds）。把 verificationUrl 作为可点链接给用户；若环境支持读图，用 read_image 展示 qrcode PNG；浏览器没自动打开时提醒用户手动点链接或扫码
 2. 等用户在浏览器完成授权确认（10 分钟内有效）。用户回复完成后：\`larklink_bindings(action=auth-complete, profile=<绑定>)\`（device_code 已在插件侧暂存，无需携带；过期会报 pending-auth-expired，届时重新 auth-start）
 3. auth-complete 返回 ready 后**原样重试**之前的操作
 
-注意：auth-complete 失败通常意味着用户还没在浏览器确认——提示用户确认后再次 auth-complete，不要立刻重新发起。绝不静默换绑定。
+注意：exec 在拦截前也会先实时核验缓存状态（needs_refresh 但实际可用时会直接放行）——只有真正失效（refresh token 过期等）才会返回 binding-needs-repair。auth-complete 失败通常意味着用户还没在浏览器确认——提示用户确认后再次 auth-complete，不要立刻重新发起。绝不静默换绑定。
 
 ## 写操作纪律
 

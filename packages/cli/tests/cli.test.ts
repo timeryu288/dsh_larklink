@@ -189,6 +189,35 @@ describe("cmdExec：守卫链端到端", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("缓存 needs_refresh 但实时核验可用 → 放行执行（回归：反复授权死循环）", async () => {
+    let reg = createRegistry();
+    reg = upsertBinding(reg, { profile: "solo", brand: "feishu", appId: "cli_1", status: "needs_refresh" }); // 陈旧缓存
+    await saveRegistry(reg, home);
+    const { runner, calls } = recorder([
+      okResult(JSON.stringify({ identities: { user: { userName: "张三", openId: "ou_1", tokenStatus: "valid" } } })), // 预核验：可用
+      okResult('{"ok":true,"data":{"title":"x"}}'), // 实际命令
+    ]);
+    expect(await cmdExec(runner, { url, profile: "solo", rawArgs: updateArgs }, home)).toBe(0);
+    expect(calls[0]).toEqual(["--profile", "solo", "auth", "status", "--json", "--verify"]);
+    expect(calls[1]![1]).toBe("solo"); // 实际命令被执行
+    expect((await loadRegistry(home)).bindings[0]!.status).toBe("ready"); // 缓存已修正
+  });
+
+  it("缓存 needs_refresh 且实时核验仍不可用 → exit 2 blocked-auth（liveVerified）", async () => {
+    let reg = createRegistry();
+    reg = upsertBinding(reg, { profile: "solo", brand: "feishu", appId: "cli_1", status: "needs_refresh" });
+    await saveRegistry(reg, home);
+    const { runner, calls } = recorder([
+      okResult(JSON.stringify({ identities: { user: { userName: "张三", openId: "ou_1", tokenStatus: "expired" } } })), // 预核验：确实不可用
+    ]);
+    let envelope: Record<string, unknown> = {};
+    expect(await cmdExec(runner, { url, profile: "solo", rawArgs: updateArgs }, home, (p) => { envelope = p as Record<string, unknown>; })).toBe(2);
+    expect(envelope["code"]).toBe("binding-needs-repair");
+    expect(envelope["bindingStatus"]).toBe("needs_refresh");
+    expect(envelope["liveVerified"]).toBe(true);
+    expect(calls).toHaveLength(1); // 只有预核验，没有执行命令
+  });
+
   it("审计落盘且载荷脱敏（Q10-③）", async () => {
     await seedTwoFeishu();
     const { runner } = recorder([okResult()]);
@@ -309,16 +338,38 @@ describe("bindings：auth split-flow（自动登录）", () => {
     let reg = createRegistry();
     reg = upsertBinding(reg, { profile: "work-feishu", brand: "feishu", appId: "cli_1", status: "needs_refresh" });
     await saveRegistry(reg, home);
-    const { runner, calls } = recorder([okResult(DEVICE_FLOW_JSON), okResult()]);
+    const { runner, calls } = recorder([
+      okResult(JSON.stringify({ identities: { user: { userName: "张三", openId: "ou_1", tokenStatus: "expired" } } })), // 预检：实时核验仍不可用
+      okResult(DEVICE_FLOW_JSON), // auth login --no-wait
+      okResult(), // auth qrcode
+    ]);
     let envelope: Record<string, unknown> = {};
     const exit = await cmdAuth({ runner, home }, { profile: "work-feishu", open: false }, (p) => { envelope = p as Record<string, unknown>; });
     expect(exit).toBe(0);
     expect(envelope["status"]).toBe("auth-started");
     expect(envelope["verificationUrl"]).toContain("accounts.feishu.cn");
-    expect(calls[0]).toEqual(["--profile", "work-feishu", "auth", "login", "--domain", "docs", "--no-wait", "--json"]);
+    expect(calls[0]).toEqual(["--profile", "work-feishu", "auth", "status", "--json", "--verify"]);
+    expect(calls[1]).toEqual(["--profile", "work-feishu", "auth", "login", "--domain", "docs", "--no-wait", "--json"]);
     const pending = JSON.parse(await readFile(join(home, "pending-auth.json"), "utf8")) as { profile: string; deviceCode: string };
     expect(pending).toMatchObject({ profile: "work-feishu", deviceCode: "dev_code_1" });
     expect((await readFile(auditPath(home), "utf8"))).toContain("auth start");
+  });
+
+  it("auth-start：绑定实时核验已可用 → already-ready，不发起新流程（回归：反复授权死循环）", async () => {
+    let reg = createRegistry();
+    reg = upsertBinding(reg, { profile: "work-feishu", brand: "feishu", appId: "cli_1", status: "needs_refresh" }); // 缓存陈旧
+    await saveRegistry(reg, home);
+    const { runner, calls } = recorder([
+      okResult(JSON.stringify({ identities: { user: { userName: "张三", openId: "ou_1", tokenStatus: "valid" } } })), // 实时核验：其实可用
+    ]);
+    let envelope: Record<string, unknown> = {};
+    const exit = await cmdAuth({ runner, home }, { profile: "work-feishu", open: false }, (p) => { envelope = p as Record<string, unknown>; });
+    expect(exit).toBe(0);
+    expect(envelope["status"]).toBe("already-ready");
+    expect(calls).toHaveLength(1); // 只有预核验，没有 auth login
+    await expect(readFile(join(home, "pending-auth.json"))).rejects.toThrow(); // 未产生新流程
+    expect((await readFile(auditPath(home), "utf8"))).toContain("already-ready");
+    expect((await loadRegistry(home)).bindings[0]!.status).toBe("ready"); // 顺带修正缓存
   });
 
   it("auth-complete：读暂存码收尾、同步 ready、清暂存", async () => {

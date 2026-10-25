@@ -3,14 +3,14 @@
  * 退出码：0 成功 | 1 lark-cli 业务错误 | 2 larklink 守卫/路由错误 | 3 歧义待选择
  *        | 10 needsConfirmation（镜像 lark-cli） | 11 timeout-unknown
  */
-import { findBinding, resolve } from "@timeryu288/larklink-core";
+import { findBinding, resolve, type BindingStatus } from "@timeryu288/larklink-core";
 import { parseEnvelope, type LarkRunner } from "../larkcli.js";
 import { safeJson } from "../larkcli.js";
 import { loadRegistry, larklinkHome } from "../store.js";
 import { appendAudit } from "../audit.js";
 import { EXEC_DOMAINS, checkTargets, computeConfirmationId, domainOf, extractTargets, findArgvAs } from "../execguard.js";
 import type { Emit } from "./bindings.js";
-import { stdEmit } from "./bindings.js";
+import { stdEmit, syncBindingStatus } from "./bindings.js";
 
 export interface ExecOptions {
   profile?: string;
@@ -63,17 +63,27 @@ export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = lark
       confidence = result.confidence;
       routedToken = result.parsed.token;
       if (result.bindingStatus !== "ready") {
-        // Q1：不换绑定；自动触发登录修复（auth-start 会开浏览器+出二维码，用户确认后 auth-complete 再重试）
-        await appendAudit({ kind: "exec", profile, outcome: "blocked-auth", confidence, domain, as }, home);
-        emit({
-          ok: false,
-          code: "binding-needs-repair",
-          profile,
-          bindingStatus: result.bindingStatus,
-          message: `绑定 ${profile} 状态 ${result.bindingStatus}，需修复授权（不自动换绑定，Q1）`,
-          fix: `立即调用 larklink_bindings(action=auth-start, profile=${profile}) 发起登录：自动打开浏览器并生成二维码；用户确认后 auth-complete，然后重试本命令`,
-        }, null, 2);
-        return 2;
+        // 缓存状态可能陈旧：lark-cli 会在下次调用时自动刷新 access token，needs_refresh ≠ 失效。
+        // 拦截前先实时核验一次——可用则放行，避免「反复要求授权」的死循环（回归 bug）。
+        let liveStatus: BindingStatus = result.bindingStatus;
+        try {
+          const synced = await syncBindingStatus({ runner, home }, home, profile);
+          if (synced.status !== undefined) liveStatus = synced.status;
+        } catch { /* 核验失败按缓存状态处理 */ }
+        if (liveStatus !== "ready") {
+          // Q1：不换绑定；自动触发登录修复（auth-start 会开浏览器+出二维码，用户确认后 auth-complete 再重试）
+          await appendAudit({ kind: "exec", profile, outcome: "blocked-auth", confidence, domain, as }, home);
+          emit({
+            ok: false,
+            code: "binding-needs-repair",
+            profile,
+            bindingStatus: liveStatus,
+            liveVerified: true,
+            message: `绑定 ${profile} 状态 ${liveStatus}（已实时核验 auth status --verify），需修复授权（不自动换绑定，Q1）`,
+            fix: `立即调用 larklink_bindings(action=auth-start, profile=${profile}) 发起登录：自动打开浏览器并生成二维码；用户确认后 auth-complete，然后重试本命令`,
+          }, null, 2);
+          return 2;
+        }
       }
     } catch (e) {
       const err = e as { code?: string; message?: string };
@@ -83,7 +93,22 @@ export async function cmdExec(runner: LarkRunner, opts: ExecOptions, home = lark
   } else if (opts.profile !== undefined) {
     const binding = findBinding(registry, opts.profile);
     if (!binding) return fail("binding-not-found", `绑定 ${opts.profile} 不存在`);
-    if (binding.status === "incomplete") return fail("binding-incomplete", `绑定 ${opts.profile} 授权未完成（Q8）`);
+    if (binding.status !== "ready") {
+      // 同 URL 分支：缓存状态陈旧时先实时核验，可用则放行
+      let liveStatus: BindingStatus = binding.status;
+      try {
+        const synced = await syncBindingStatus({ runner, home }, home, opts.profile);
+        if (synced.status !== undefined) liveStatus = synced.status;
+      } catch { /* 核验失败按缓存状态处理 */ }
+      if (liveStatus === "incomplete") return fail("binding-incomplete", `绑定 ${opts.profile} 授权未完成（已实时核验，Q8）`);
+      if (liveStatus !== "ready") {
+        return fail("binding-needs-repair", `绑定 ${opts.profile} 状态 ${liveStatus}（已实时核验），需修复授权`, {
+          bindingStatus: liveStatus,
+          liveVerified: true,
+          fix: `立即调用 larklink_bindings(action=auth-start, profile=${opts.profile}) 发起登录`,
+        });
+      }
+    }
     profile = opts.profile;
     confidence = "explicit";
   } else {
