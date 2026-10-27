@@ -372,6 +372,51 @@ describe("bindings：auth split-flow（自动登录）", () => {
     expect((await loadRegistry(home)).bindings[0]!.status).toBe("ready"); // 顺带修正缓存
   });
 
+  it("auth-start：已有未过期进行中流程 → auth-pending 复用（不新开浏览器/不新建流程）", async () => {
+    let reg = createRegistry();
+    reg = upsertBinding(reg, { profile: "work-feishu", brand: "feishu", appId: "cli_1", status: "needs_refresh" });
+    await saveRegistry(reg, home);
+    await writeFile(join(home, "pending-auth.json"), JSON.stringify({
+      profile: "work-feishu", deviceCode: "inflight_code", verificationUrl: "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=keep",
+      startedAt: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() + 540_000).toISOString(),
+    }), "utf8");
+    const { runner, calls } = recorder([
+      okResult(JSON.stringify({ identities: { user: { userName: "张三", tokenStatus: "expired" } } })), // 预检：不可用
+    ]);
+    let envelope: Record<string, unknown> = {};
+    const exit = await cmdAuth({ runner, home }, { profile: "work-feishu", open: false }, (p) => { envelope = p as Record<string, unknown>; });
+    expect(exit).toBe(0);
+    expect(envelope["status"]).toBe("auth-pending");
+    expect(envelope["reusedExisting"]).toBe(true);
+    expect(envelope["verificationUrl"]).toContain("flow_id=keep");
+    expect(calls).toHaveLength(1); // 只有预核验：没有 auth login、没有开新流程
+    const pending = JSON.parse(await readFile(join(home, "pending-auth.json"), "utf8")) as { deviceCode: string };
+    expect(pending.deviceCode).toBe("inflight_code"); // 原流程保留
+  });
+
+  it("auth-start：进行中流程已过期 → 清理后发起全新流程（Q8-②）", async () => {
+    let reg = createRegistry();
+    reg = upsertBinding(reg, { profile: "work-feishu", brand: "feishu", appId: "cli_1", status: "needs_refresh" });
+    await saveRegistry(reg, home);
+    await writeFile(join(home, "pending-auth.json"), JSON.stringify({
+      profile: "work-feishu", deviceCode: "old_code", verificationUrl: "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=old",
+      startedAt: new Date(Date.now() - 900_000).toISOString(), expiresAt: new Date(Date.now() - 300_000).toISOString(),
+    }), "utf8");
+    const { runner, calls } = recorder([
+      okResult(JSON.stringify({ identities: { user: { userName: "张三", tokenStatus: "expired" } } })), // 预检
+      okResult(DEVICE_FLOW_JSON), // 新流程
+      okResult(), // qrcode
+    ]);
+    let envelope: Record<string, unknown> = {};
+    const exit = await cmdAuth({ runner, home }, { profile: "work-feishu", open: false }, (p) => { envelope = p as Record<string, unknown>; });
+    expect(exit).toBe(0);
+    expect(envelope["status"]).toBe("auth-started");
+    expect(envelope["verificationUrl"]).toContain("flow_id=x"); // 新流程而非复用旧 flow
+    expect(calls[1]).toEqual(["--profile", "work-feishu", "auth", "login", "--domain", "docs", "--no-wait", "--json"]);
+    const pending = JSON.parse(await readFile(join(home, "pending-auth.json"), "utf8")) as { deviceCode: string };
+    expect(pending.deviceCode).toBe("dev_code_1"); // 旧码已废弃
+  });
+
   it("auth-complete：读暂存码收尾、同步 ready、清暂存", async () => {
     await writeFile(join(home, "pending-auth.json"), JSON.stringify({
       profile: "work-feishu", deviceCode: "dev_code_2", verificationUrl: "https://x",

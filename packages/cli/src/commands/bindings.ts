@@ -3,7 +3,7 @@
  * 所有 lark-cli 调用经注入的 runner，便于测试 mock。
  */
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   findBinding,
@@ -255,6 +255,41 @@ export async function cmdAuth(
       return 0;
     }
   } catch { /* 预检失败不阻塞正常发起流程 */ }
+
+  // 复用进行中的流程：未过期的同一绑定授权流不再新建（否则每次重试都新开浏览器/新设备码 → 弹窗风暴+过期页报错）。
+  // 只在流程失效后才发起全新流程（Q8-②：绝不缓存复用已过期的旧码）。
+  const inflight = await readPendingAuth(home);
+  if (inflight !== null && inflight.profile === opts.profile) {
+    if (Date.parse(inflight.expiresAt) > Date.now()) {
+      let qrcode: string | undefined;
+      const qrPath = join(home, `qrcode-${opts.profile}.png`);
+      try {
+        await access(qrPath);
+        qrcode = qrPath;
+      } catch { /* 无二维码文件 */ }
+      await appendAudit({ kind: "bindings", profile: opts.profile, message: "auth start reused（inflight）" }, home);
+      emit({
+        ok: true,
+        profile: opts.profile,
+        status: "auth-pending",
+        verificationUrl: inflight.verificationUrl,
+        qrcode,
+        expiresAt: inflight.expiresAt,
+        reusedExisting: true,
+        message: `绑定 ${opts.profile} 已有进行中的授权流程（${inflight.startedAt} 发起，${inflight.expiresAt} 过期）——已复用，不再新建`
+          + "。请完成已打开的授权页面，而不是重新扫码。",
+        next: [
+          "1. 用户在**已打开/已给出**的授权页完成确认（不要重复打开新页面）",
+          "2. 用户确认后调用 auth-complete（device_code 已暂存）",
+          "3. 若该流程已过期，再调用 auth-start 发起全新流程（会自动清理旧流程）",
+        ].join("\n"),
+      }, null, 2);
+      return 0;
+    }
+    // 过期流程：清掉，随后走全新流程
+    await clearPendingAuth(home);
+  }
+
   const domain = opts.domain ?? "docs";
   const res = await ctx.runner(
     ["--profile", opts.profile, "auth", "login", "--domain", domain, "--no-wait", "--json"],
